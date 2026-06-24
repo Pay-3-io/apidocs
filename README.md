@@ -31,4 +31,4 @@ python3 -m http.server 8080   # → http://localhost:8080
 ## 仕様のメンテ
 - 認証は2層（Admin Basic でクライアント管理 / OAuth Bearer でデータプレーン）。Admin 系エンドポイントは公開 docs には含めない。
 - 新規エンドポイント追加時は `openapi.yaml` に追記するだけ。
-- Webhook は `x-webhooks`（Redoc 拡張）に定義。
+- Webhook は OpenAPI 3.1 の `webhooks` に定義。
