@@ -1,22 +1,22 @@
 # Pay3 B2B API Docs
 
-Pay3 の B2B カード発行 API の公式ドキュメント。`openapi.yaml`（OpenAPI 3.1）を [Redoc](https://github.com/Redocly/redoc) で静的レンダリングする構成。**完全無料・依存サービスなし**（Redoc は CDN の OSS、ホスティングは GitHub Pages）。
+Pay3 の B2B カード発行 API の公式ドキュメント。`openapi.yaml`（OpenAPI 3.1）を [Scalar](https://github.com/scalar/scalar) で静的レンダリングする構成。**完全無料・依存サービスなし**（Scalar は CDN の OSS、ホスティングは GitHub Pages）。
 
 ## ファイル
 - `openapi.yaml` — API 仕様（唯一の正。これを編集すれば docs が更新される）
-- `index.html` — Redoc レンダラ（`openapi.yaml` を読み込む）
+- `index.html` — Scalar レンダラ（モダンUI・ダークモード）（`openapi.yaml` を読み込む）
 - `CNAME` — カスタムドメイン `developer.pay-3.io` 用
 
 ## ローカルプレビュー
 ```bash
 # どれでも可
-npx @redocly/cli preview-docs openapi.yaml
+npx @scalar/cli@latest document serve openapi.yaml  # もしくは下の静的サーバ
 # もしくは静的サーバ
 python3 -m http.server 8080   # → http://localhost:8080
 ```
 
 ## 公開（GitHub Pages・無料・リポジトリ管理者が制御）
-現状 `developer.pay-3.io` は Vercel 上の Redoc 配信ですが、その Vercel プロジェクトに権限が無いため、**GitHub Pages に移行**して org 管理下で運用する。
+現状 `developer.pay-3.io` は Vercel 上の旧Redoc配信ですが、その Vercel プロジェクトに権限が無いため、**GitHub Pages に移行**して org 管理下で運用する。
 
 1. このリポジトリの **Settings → Pages**
 2. **Source: Deploy from a branch** → Branch: `main`（または公開したいブランチ）/ `/root`
@@ -26,7 +26,7 @@ python3 -m http.server 8080   # → http://localhost:8080
    - DNS: `developer.pay-3.io` の CNAME を `pay-3-io.github.io` に向ける（現在の Vercel 向け設定を差し替え）
    - Settings → Pages → Custom domain に `developer.pay-3.io` を設定し Enforce HTTPS
 
-> Redoc は特定バージョン(2.1.5)に固定し SRI(integrity) を付与済み。バージョン更新時は `index.html` の version と integrity を同時に更新する。
+> Scalar は特定バージョン(1.61.0)に固定し SRI(integrity) を付与済み。バージョン更新時は `index.html` の version と integrity を同時に更新する。
 
 ## 仕様のメンテ
 - 認証は2層（Admin Basic でクライアント管理 / OAuth Bearer でデータプレーン）。Admin 系エンドポイントは公開 docs には含めない。

@@ -3,14 +3,22 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Pay3 B2B API Docs</title>
-    <style>body { margin: 0; padding: 0; }</style>
+    <title>Pay3 B2B API</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💳</text></svg>" />
+    <style>
+      body { margin: 0; }
+    </style>
   </head>
   <body>
-    <redoc spec-url="openapi.yaml"></redoc>
+    <!-- Scalar API Reference (modern UI). spec は openapi.yaml を読み込む -->
     <script
-      src="https://cdn.jsdelivr.net/npm/redoc@2.1.5/bundles/redoc.standalone.js"
-      integrity="sha384-0GrsyTQc9Oqd8h+b2dbc4XdR2T/DYpy0tLNNstyx+LBMUyiBbcWPbEs9aRmUcaxD"
+      id="api-reference"
+      data-url="openapi.yaml"
+      data-configuration='{"theme":"default","layout":"modern","darkMode":true,"hideDownloadButton":false,"metaData":{"title":"Pay3 B2B API"}}'
+    ></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.61.0/dist/browser/standalone.js"
+      integrity="sha384-Xs/iJWxWjlZkAyFsV9D9nI5WP5iKFnNNbnZVXMsTxD5dseQbCaaaYIb0YUtR9Ckl"
       crossorigin="anonymous"
     ></script>
   </body>
