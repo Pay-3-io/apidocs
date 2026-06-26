@@ -16,15 +16,11 @@ python3 -m http.server 8080   # → http://localhost:8080
 ```
 
 ## 公開（GitHub Pages・無料・リポジトリ管理者が制御）
-現状 `developer.pay-3.io` は Vercel 上の旧Redoc配信ですが、その Vercel プロジェクトに権限が無いため、**GitHub Pages に移行**して org 管理下で運用する。
+**公開中**。GitHub Pages が `init-docs` ブランチ（`/root`）から配信し、カスタムドメイン `developer.pay-3.io`（`CNAME` ファイル）で公開している。`init-docs` に push すれば数分で反映される。
 
-1. このリポジトリの **Settings → Pages**
-2. **Source: Deploy from a branch** → Branch: `main`（または公開したいブランチ）/ `/root`
-3. 数分で `https://pay-3-io.github.io/apidocs/` に公開される
-4. カスタムドメインを使う場合:
-   - `CNAME` ファイル（`developer.pay-3.io`）はこのリポジトリに含む
-   - DNS: `developer.pay-3.io` の CNAME を `pay-3-io.github.io` に向ける（現在の Vercel 向け設定を差し替え）
-   - Settings → Pages → Custom domain に `developer.pay-3.io` を設定し Enforce HTTPS
+- 公開URL: https://developer.pay-3.io/ （= `https://pay-3-io.github.io/apidocs/`）
+- 設定: **Settings → Pages** → Source: Deploy from a branch → Branch: `init-docs` / `/root`
+- カスタムドメイン: Settings → Pages → Custom domain = `developer.pay-3.io`、Enforce HTTPS 有効。DNS は `developer.pay-3.io` の CNAME を `pay-3-io.github.io` に向ける。
 
 > Scalar は特定バージョン(1.61.0)に固定し SRI(integrity) を付与済み。バージョン更新時は `index.html` の version と integrity を同時に更新する。
 

@@ -1,68 +1,134 @@
 openapi: 3.1.0
+
 info:
   title: Pay3 External API
-  version: "1.0.0"
-  description: A system that allows external corporations (Partners) to use Pay3’s card issuance, KYC, and payment infrastructure while maintaining their own UI.
+  version: "1.1.0"
+  summary: Card issuance, KYC, and crypto-funding APIs for Pay3 partners.
+  description: |
+    The **Pay3 External API** lets partners embed Pay3's card-issuance, KYC, and
+    crypto-funding infrastructure into their own product while keeping their own UI.
+
+    ## Authentication
+
+    Authentication is a two-step flow:
+
+    1. **Get an access token** — call [`POST /oauth/access-token`](#tag/authentication/post/oauth/access-token)
+       with your `clientId` and `clientSecret`. You receive a bearer `accessToken`.
+    2. **Call the API** — send the token on every other request:
+
+       ```
+       Authorization: Bearer <accessToken>
+       ```
+
+    Tokens are short-lived (default **1 hour**). When a token expires the API returns
+    `401 Token expired`; request a new one and retry. Treat `clientSecret` and access
+    tokens as secrets — never expose them in a browser or mobile client.
+
+    ## Idempotency
+
+    Mutating endpoints that create resources (`POST /card/issue_card`, `POST /kyc/submit`)
+    accept an optional **`Idempotency-Key`** header. Reusing the same key replays the
+    original response instead of performing the action again, so a network retry can
+    never double-issue a card. A request still in flight for the same key returns `409`.
+    Use a fresh UUID per logical operation.
+
+    ## Webhooks
+
+    Pay3 delivers events (e.g. [`card.issued`](#tag/webhooks)) to the `webhook_url`
+    registered for your client. Each delivery is signed with
+    `X-Pay3-Signature: hex(HMAC_SHA256(webhook_secret, rawBody))`. Verify the signature,
+    respond `2xx` quickly, and dedupe on `X-Pay3-Delivery`. Non-`2xx` responses are
+    retried with exponential backoff.
+
+    ## Environments
+
+    The base URL below is **production**. Sandbox access (test cards, mock balances) is
+    provisioned per partner with separate credentials — contact your Pay3 representative.
+
+    ## Errors
+
+    Errors share a single shape — `{ "message": string, "code": integer }` — and use
+    conventional HTTP status codes (`400`, `401`, `409`, `500`).
+  contact:
+    name: Pay3 Partnerships
+    url: https://pay-3.io
 
 servers:
   - url: https://api.pay-3.io/functions/v1/external-service
+    description: Production
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Authentication
+    description: Exchange client credentials for a short-lived bearer access token.
+  - name: Users
+    description: Register end users under your client and look them up.
+  - name: KYC
+    description: Drive the user's identity verification (powered by Sumsub).
+  - name: Cards
+    description: Card applications, issuance, management, transactions, and crypto funding.
 
 paths:
   /oauth/access-token:
     post:
-      summary: Generate OAuth access token
+      tags:
+        - Authentication
+      summary: Generate access token
+      operationId: generateAccessToken
       description: |
-        Generates an OAuth access token for accessing the external service.
+        Exchanges your `clientId` and `clientSecret` for a short-lived bearer access
+        token used to authenticate every other endpoint.
+      security: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required:
+                - clientId
+                - clientSecret
               properties:
                 clientId:
                   type: string
-                  example: "1234567890"
+                  description: Your Pay3 client identifier.
+                  example: pay3_partner_acme
                 clientSecret:
                   type: string
-                  example: "1234567890"
+                  description: Your Pay3 client secret. Keep this server-side only.
+                  example: cQ4n8Lp2Rx7Tw0cJ6Hb3Vk9Fm1Ds5Az
       responses:
         "200":
-          description: Successful operation
+          description: Access token generated successfully.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  message:
-                    type: string
-                    example: OAuth access token generated successfully
-                  accessToken:
-                    type: string
-                    example: "eyJjbGllbn********tIiwiY2xpZW50X2FwaV9rZXkiOiJkNm9zS0tRWUczZVdUbkE4Q0djVWprWDlpaUN4bnlldUdibXBOVHR3MF9jIiwidGltZXN0YW1wIjoxNzYyNDQ3NzAwMjE3LCJ1dWlkIjoiODY3ZWY5YjctYjM1NC00OWUwLTgyNTktYzIyYjUxMTkwZDZjIn0=./V9EI/wBvkf3qZ2G*****dWQxBBKVsE4+E="
                   success:
                     type: boolean
                     example: true
+                  message:
+                    type: string
+                    example: Oauth access token generated successfully
+                  accessToken:
+                    type: string
+                    description: "Bearer token to send as `Authorization: Bearer <accessToken>`."
+                    example: "eyJjbGllbnRfbmFtZSI6InBheTNfcGFydG5lcl9hY21lIiwidGltZXN0YW1wIjoxNzYyNDQ3NzAwMjE3fQ==.V9EIwBvkf3qZ2GdWQxBBKVsE4E="
         "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/InvalidCredentials"
 
   /users/register:
     post:
-      summary: Register a new user
+      tags:
+        - Users
+      summary: Register a user
+      operationId: registerUser
       description: |
-        Registers a new user with basic information such as first name, last name, and signup type.
-      security:
-        - bearerAuth: []
+        Registers a new end user under your client. Returns the Pay3 `userId` you use
+        for every subsequent call (KYC, card issuance, etc.).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -78,19 +144,31 @@ paths:
               properties:
                 first_name:
                   type: string
-                  example: Pratham1
+                  example: Alex
                 last_name:
                   type: string
-                  example: ""
+                  example: Rivera
                 signup_type_id:
                   type: string
+                  description: The user's unique identifier on your platform.
                   example: "835519111"
                 signup_type:
                   type: string
+                  description: The platform the user signed up from.
                   example: TELEGRAM
+                email:
+                  type: string
+                  format: email
+                  example: alex.rivera@example.com
+                phone_number:
+                  type: string
+                  example: "+15555550123"
+                telegram_id:
+                  type: string
+                  example: "835519111"
       responses:
         "200":
-          description: User registered successfully
+          description: User registered successfully.
           content:
             application/json:
               schema:
@@ -107,46 +185,42 @@ paths:
                     properties:
                       first_name:
                         type: string
-                        example: Pratham1
+                        example: Alex
                       last_name:
                         type: string
-                        example: ""
+                        example: Rivera
+                      userId:
+                        type: string
+                        format: uuid
+                        example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
                       card_issued:
                         type: boolean
                         example: false
-                      userId:
-                        type: string
-                        example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
         "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/BadRequest"
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
 
   /users:
     get:
-      summary: Get user by ID
-      description: |
-        Retrieves user information if the ID is provided.
+      tags:
+        - Users
+      summary: Get a user
+      operationId: getUser
+      description: Retrieves a user that belongs to your client.
       parameters:
         - name: id
           in: query
           required: true
+          description: The Pay3 user ID (UUID).
           schema:
             type: string
-          description: The user ID (UUID)
-      security:
-        - bearerAuth: []
+            format: uuid
       responses:
         "200":
-          description: Successful operation
+          description: User fetched successfully.
           content:
             application/json:
               schema:
@@ -159,104 +233,21 @@ paths:
                     type: integer
                     example: 0
                   data:
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                        example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
-                      first_name:
-                        type: string
-                        example: Pratham1
-                      last_name:
-                        type: string
-                        example: ""
-                      email:
-                        type: string
-                        nullable: true
-                        example: null
-                      phone_number:
-                        type: string
-                        nullable: true
-                        example: null
-                      telegram_id:
-                        type: string
-                        example: "835519111"
-                      client_id:
-                        type: string
-                        example: 1df64a72-72be-4522-a0ed-62a7a608e6d3
-                      created_at:
-                        type: string
-                        format: date-time
-                        example: "2025-11-06T11:24:28.575703+00:00"
-                      updated_at:
-                        type: string
-                        nullable: true
-                        example: null
-                      signup_type_id:
-                        type: string
-                        example: "835519111"
-                      signup_type:
-                        type: string
-                        example: TELEGRAM
-                      card_issued:
-                        type: boolean
-                        example: false
-                      wallet_id:
-                        type: string
-                        nullable: true
-                        example: null
-                      account_id:
-                        type: string
-                        nullable: true
-                        example: null
-                      budget_id:
-                        type: string
-                        nullable: true
-                        example: null
-                      sumsub_id:
-                        type: string
-                        nullable: true
-                        example: null
-                      kyc_verified:
-                        type: boolean
-                        nullable: true
-                        example: null
-                      cardholder_id:
-                        type: string
-                        nullable: true
-                        example: null
+                    $ref: "#/components/schemas/User"
         "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/BadRequest"
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Unauthorized"
 
   /kyc/access-token:
     post:
-      summary: Generate KYC access token
-      description: |
-        Generates a temporary access token for the user's KYC verification process.
       tags:
-        - KYC Service
-      security:
-        - bearerAuth: []
-      parameters:
-      - in: header
-        name: X-Environment
-        required: false
-        schema:
-          type: string
-          enum: [sandbox, production]
-        description: |
-          Optional environment override.
-          Defaults to production.
+        - KYC
+      summary: Generate KYC access token
+      operationId: generateKycAccessToken
+      description: |
+        Generates a short-lived Sumsub access token used to launch the KYC flow
+        (e.g. with the Sumsub WebSDK) for the given user.
       requestBody:
         required: true
         content:
@@ -268,11 +259,12 @@ paths:
               properties:
                 userId:
                   type: string
-                  description: The UUID of the user requesting KYC access.
+                  format: uuid
+                  description: The user starting KYC.
                   example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
       responses:
         "200":
-          description: KYC Access token generated successfully
+          description: KYC access token generated successfully.
           content:
             application/json:
               schema:
@@ -289,42 +281,28 @@ paths:
                     properties:
                       accessToken:
                         type: string
-                        example: "_act-jwt-eyJhbGciOiJub25lIn0.eyJqdGkiOi=========U5YzAtNDhlYy1iOTM4LWRjZjUyYTk2ZjVjNC12MiIsI=====h0dHBzOi8vYXBpLnN1bXN1Yi5jb20ifQ.-v2"
+                        description: Sumsub access token for the WebSDK / mobile SDK.
+                        example: "_act-jwt-eyJhbGciOiJub25lIn0.eyJqdGkiOiJfYWN0LWV4YW1wbGUiLCJ1cmwiOiJodHRwczovL2FwaS5zdW1zdWIuY29tIn0.-v2"
                       userId:
                         type: string
+                        format: uuid
                         example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
         "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/BadRequest"
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Unauthorized"
 
   /kyc/submit:
     post:
-      summary: Submit KYC for verification
-      description: Submits KYC data for the specified user and applicant ID.
       tags:
-        - KYC Service
-      security:
-        - bearerAuth: []
+        - KYC
+      summary: Submit KYC for verification
+      operationId: submitKyc
+      description: |
+        Submits the user's completed Sumsub applicant for verification and provisions
+        their downstream card account. Idempotent via the `Idempotency-Key` header.
       parameters:
-      - $ref: "#/components/parameters/IdempotencyKey"
-      - in: header
-        name: X-Environment
-        required: false
-        schema:
-          type: string
-          enum: [sandbox, production]
-        description: |
-          Optional environment override.
-          Defaults to production.
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -337,13 +315,15 @@ paths:
               properties:
                 userId:
                   type: string
-                  example: ac0d2c0d-610e-45c3-9752-520bd0108e45
+                  format: uuid
+                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
                 applicantId:
                   type: string
-                  example: testapplicationId
+                  description: The Sumsub applicant ID for the user.
+                  example: 65f3c1a2b4d5e6f7a8b9c0d1
       responses:
         "200":
-          description: KYC submitted successfully
+          description: KYC submitted successfully.
           content:
             application/json:
               schema:
@@ -360,41 +340,25 @@ paths:
                     properties:
                       applicantId:
                         type: string
-                        example: test
+                        example: 65f3c1a2b4d5e6f7a8b9c0d1
         "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/BadRequest"
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/IdempotencyConflict"
+        "500":
+          $ref: "#/components/responses/ServerError"
 
   /card/application/start:
     post:
-      summary: Start card application
-      description: |
-        Starts the card application process for a given user and applicant.
-        - Sandbox: Test cards, mock balances
-        - Production: Real cards & transactions
       tags:
-        - Card Service
-      security:
-        - bearerAuth: []
-      parameters:
-      - in: header
-        name: X-Environment
-        required: false
-        schema:
-          type: string
-          enum: [sandbox, production]
-        description: |
-          Optional environment override.
-          Defaults to production.
+        - Cards
+      summary: Start a card application
+      operationId: startCardApplication
+      description: |
+        Starts (or returns the in-progress) card application for the user. This call is
+        idempotent — if an application already exists it is returned unchanged.
       requestBody:
         required: true
         content:
@@ -406,10 +370,11 @@ paths:
               properties:
                 userId:
                   type: string
-                  example: ac0d2c0d-610e-45c3-9752-520bd0108e45
+                  format: uuid
+                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
       responses:
         "200":
-          description: Card application started successfully or already exists
+          description: Card application started successfully or already exists.
           content:
             application/json:
               schema:
@@ -425,99 +390,21 @@ paths:
                     type: object
                     properties:
                       application:
-                        type: object
-                        properties:
-                          id:
-                            type: string
-                            example: 94655d78-71a8-43a5-9654-7c5996ee51c3
-                          created_at:
-                            type: string
-                            format: date-time
-                            example: "2025-11-08T12:55:54.644752+00:00"
-                          user_id:
-                            type: string
-                            example: ac0d2c0d-610e-45c3-9752-520bd0108e45
-                          whitelisted:
-                            type: boolean
-                            example: false
-                          code_redeemed:
-                            type: string
-                            nullable: true
-                            example: null
-                          phone_verified:
-                            type: boolean
-                            example: false
-                          email_verified:
-                            type: boolean
-                            example: false
-                          kyc_verified:
-                            type: boolean
-                            example: false
-                          personal_data:
-                            type: object
-                            nullable: true
-                            example: null
-                          billing_data:
-                            type: object
-                            nullable: true
-                            example: null
-                          order_data:
-                            type: object
-                            nullable: true
-                            example: null
-                          card_issued:
-                            type: boolean
-                            example: false
-                          card_issued_on:
-                            type: string
-                            nullable: true
-                            example: null
-                          card_id:
-                            type: string
-                            nullable: true
-                            example: null
-                          budget_id:
-                            type: string
-                            nullable: true
-                            example: null
-                          kyc_status:
-                            type: string
-                            nullable: true
-                            example: null
+                        $ref: "#/components/schemas/CardApplication"
         "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/BadRequest"
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
 
   /card/application:
     post:
-      summary: Fetch card application
-      description: |
-        Retrieves the card application details for a given user.
-        - Sandbox: Test cards, mock balances
-        - Production: Real cards & transactions
       tags:
-        - Card Service
-      security:
-        - bearerAuth: []
-      parameters:
-      - in: header
-        name: X-Environment
-        required: false
-        schema:
-          type: string
-          enum: [sandbox, production]
-        description: |
-          Optional environment override.
-          Defaults to production.
+        - Cards
+      summary: Fetch the card application
+      operationId: fetchCardApplication
+      description: Retrieves the current card application for the user.
       requestBody:
         required: true
         content:
@@ -529,10 +416,11 @@ paths:
               properties:
                 userId:
                   type: string
-                  example: ac0d2c0d-610e-45c3-9752-520bd0108e45
+                  format: uuid
+                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
       responses:
         "200":
-          description: Card application fetched successfully
+          description: Card application fetched successfully.
           content:
             application/json:
               schema:
@@ -540,7 +428,7 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: Card application fetched
+                    example: Card application fetched successfully
                   code:
                     type: integer
                     example: 0
@@ -548,122 +436,60 @@ paths:
                     type: object
                     properties:
                       application:
-                        type: object
-                        properties:
-                          id:
-                            type: string
-                            example: 94655d78-71a8-43a5-9654-7c5996ee51c3
-                          created_at:
-                            type: string
-                            format: date-time
-                            example: "2025-11-08T12:55:54.644752+00:00"
-                          user_id:
-                            type: string
-                            example: ac0d2c0d-610e-45c3-9752-520bd0108e45
-                          whitelisted:
-                            type: boolean
-                            example: false
-                          code_redeemed:
-                            type: string
-                            nullable: true
-                            example: null
-                          phone_verified:
-                            type: boolean
-                            example: false
-                          email_verified:
-                            type: boolean
-                            example: false
-                          kyc_verified:
-                            type: boolean
-                            example: false
-                          personal_data:
-                            type: object
-                            nullable: true
-                            example: null
-                          billing_data:
-                            type: object
-                            nullable: true
-                            example: null
-                          order_data:
-                            type: object
-                            nullable: true
-                            example: null
-                          card_issued:
-                            type: boolean
-                            example: false
-                          card_issued_on:
-                            type: string
-                            nullable: true
-                            example: null
-                          card_id:
-                            type: string
-                            nullable: true
-                            example: null
-                          budget_id:
-                            type: string
-                            nullable: true
-                            example: null
-                          kyc_status:
-                            type: string
-                            nullable: true
-                            example: null
+                        $ref: "#/components/schemas/CardApplication"
         "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/BadRequest"
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
 
   /card/issue_card:
     post:
-      summary: Issue new card
-      description: |
-        Issues a new virtual card for a given user.
-        - Sandbox: Test cards, mock balances
-        - Production: Real cards & transactions
-
-        On success, a `card.issued` webhook is delivered to the client's registered
-        `webhook_url`. Pass an `Idempotency-Key` to safely retry without double-issuing.
       tags:
-        - Card Service
+        - Cards
+      summary: Issue a card
+      operationId: issueCard
+      description: |
+        Issues a new card for the user. On success a [`card.issued`](#tag/webhooks)
+        webhook is delivered to your registered `webhook_url`.
+
+        Pass an `Idempotency-Key` to safely retry without double-issuing.
       parameters:
-      - $ref: "#/components/parameters/IdempotencyKey"
-      - in: header
-        name: X-Environment
-        required: false
-        schema:
-          type: string
-          enum: [sandbox, production]
-        description: |
-          Optional environment override.
-          Defaults to production.
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required:
+                - userId
+                - type
               properties:
                 userId:
                   type: string
                   format: uuid
-                  example: "04610acd-01da-4d4d-982f-d12de7dac529"
+                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
                 type:
                   type: string
-                  description: Type of card to issue
+                  description: Type of card to issue.
                   enum:
                     - virtual
                     - physical
                   example: virtual
+                amount:
+                  type: number
+                  description: |
+                    Optional balance (in USD) to load onto the card at issuance.
+                    Defaults to `0`, in which case the issuance fee is covered by your
+                    master account and no extra balance is preloaded. This is a funding
+                    amount, not the card price.
+                  default: 0
+                  example: 0
       responses:
         "200":
-          description: Card issued successfully
+          description: Card issued successfully.
           content:
             application/json:
               schema:
@@ -671,78 +497,28 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: "Card issued successfully"
+                    example: Card issued successfully
                   code:
                     type: integer
                     example: 0
                   data:
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                        format: uuid
-                      accountId:
-                        type: string
-                        format: uuid
-                      token:
-                        type: string
-                      status:
-                        type: string
-                      currency:
-                        type: string
-                      userName:
-                        type: string
-                      createTime:
-                        type: string
-                        format: date-time
-                      cardNoLastFour:
-                        type: string
-                      cardAddress:
-                        type: object
-                        properties:
-                          addressLine1: { type: string }
-                          city: { type: string }
-                          country: { type: string }
-                          postalCode: { type: string }
-                          state: { type: string }
-                      label: { type: string }
-                      useType: { type: string }
-                      balanceId: { type: string }
-                      budgetId: { type: string }
-                      bin: { type: string }
-
+                    $ref: "#/components/schemas/Card"
         "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/BadRequest"
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/IdempotencyConflict"
+        "500":
+          $ref: "#/components/responses/ServerError"
 
   /card/fetch_cards:
     post:
-      summary: Fetch all cards for a user
-      description: |
-        Returns a list of virtual cards associated with the given user.
-        - Sandbox: Test cards, mock balances
-        - Production: Real cards & transactions
       tags:
-        - Card Service
-      parameters:
-      - in: header
-        name: X-Environment
-        required: false
-        schema:
-          type: string
-          enum: [sandbox, production]
-        description: |
-          Optional environment override.
-          Defaults to production.
+        - Cards
+      summary: List the user's cards
+      operationId: fetchCards
+      description: Returns all cards associated with the user.
       requestBody:
         required: true
         content:
@@ -755,10 +531,10 @@ paths:
                 userId:
                   type: string
                   format: uuid
-                  example: "04610acd-01da-4d4d-982f-d12de7dac529"
+                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
       responses:
         "200":
-          description: Cards fetched successfully
+          description: Cards fetched successfully.
           content:
             application/json:
               schema:
@@ -766,100 +542,28 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: "Cards info fetched successfully"
+                    example: Cards fetched successfully
                   code:
                     type: integer
                     example: 0
                   data:
                     type: array
                     items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                          format: uuid
-                          example: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
-                        accountId:
-                          type: string
-                          format: uuid
-                          example: "bf9866ad-46e1-43ff-8b21-68a57c67acfc"
-                        token:
-                          type: string
-                          example: "cproxy2931455915873"
-                        status:
-                          type: string
-                          example: "Active"
-                        currency:
-                          type: string
-                          example: "USD"
-                        userName:
-                          type: string
-                          example: "Mitsuaki Ishida"
-                        createTime:
-                          type: string
-                          format: date-time
-                          example: "2025-07-17T04:44:16.964Z"
-                        cardNoLastFour:
-                          type: string
-                          example: "2362"
-                        cardAddress:
-                          type: object
-                          properties:
-                            addressLine1: { type: string, example: "Room 1205, 6-10-9 Minami Aoyama" }
-                            addressLine2: { type: string, example: "Room 1205" }
-                            city: { type: string, example: "Minato City" }
-                            country: { type: string, example: "JP" }
-                            postalCode: { type: string, example: "1070062" }
-                            state: { type: string, example: "Tokyo" }
-                        label:
-                          type: string
-                          example: "Mitsuaki Ishida's credit card"
-                        useType:
-                          type: string
-                          example: "online"
-                        balanceId:
-                          type: string
-                          example: "f1f70e3a-ce61-4df2-92cc-83ce9666df7d"
-                        budgetId:
-                          type: string
-                          example: "950661d3-94c6-42d1-bd70-ba4986a1581d"
-                        bin:
-                          type: string
-                          example: "537100"
-
+                      $ref: "#/components/schemas/Card"
         "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
+          $ref: "#/components/responses/BadRequest"
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Unauthorized"
 
   /card/fetch_card_details:
     post:
-      summary: Fetch full card details
-      description: |
-        Returns sensitive card details (CVV, full card number, expiry) for a given user and card ID.
-        - Sandbox: Test cards, mock balances
-        - Production: Real cards & transactions
       tags:
-        - Card Service
-      parameters:
-      - in: header
-        name: X-Environment
-        required: false
-        schema:
-          type: string
-          enum: [sandbox, production]
-        description: |
-          Optional environment override.
-          Defaults to production.
+        - Cards
+      summary: Fetch full card details
+      operationId: fetchCardDetails
+      description: |
+        Returns sensitive card details (full PAN, CVV, and expiry) for a single card.
+        Only surface these values over a secure channel, and never log them.
       requestBody:
         required: true
         content:
@@ -873,14 +577,14 @@ paths:
                 userId:
                   type: string
                   format: uuid
-                  example: "04610acd-01da-4d4d-982f-d12de7dac529"
+                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
                 cardId:
                   type: string
                   format: uuid
-                  example: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
+                  example: cee34fdd-51cc-49bd-b71a-d6bc0653bb34
       responses:
         "200":
-          description: Card details fetched successfully
+          description: Card details fetched successfully.
           content:
             application/json:
               schema:
@@ -888,59 +592,47 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: "Card details fetched successfully"
+                    example: Card details fetched successfully
                   code:
                     type: integer
                     example: 0
                   data:
                     type: object
                     properties:
+                      cardNo:
+                        type: string
+                        description: Full card number (PAN).
+                        example: "5371000000002362"
                       cvv:
                         type: string
                         example: "380"
-                      expYear:
-                        type: string
-                        example: "2028"
                       expMonth:
                         type: string
                         example: "07"
-                      cardNo:
+                      expYear:
                         type: string
-                        example: "5371007412212362"
-
+                        example: "2028"
         "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
+          $ref: "#/components/responses/BadRequest"
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Unauthorized"
 
-  card/fetch_deposit_address:
+  /card/fetch_deposit_address:
     post:
-      summary: Fetch crypto deposit address
-      description: |
-        Retrieves the deposit address for a given user, token, and network combination.
-        - Sandbox: Test cards, mock balances
-        - Production: Real cards & transactions
       tags:
-        - Card Service
-      parameters:
-      - in: header
-        name: X-Environment
-        required: false
-        schema:
-          type: string
-          enum: [sandbox, production]
-        description: |
-          Optional environment override.
-          Defaults to production.
+        - Cards
+      summary: Fetch a crypto deposit address
+      operationId: fetchDepositAddress
+      description: |
+        Returns the deposit address for funding the user's card balance with the given
+        token on the given network. Funds sent to this address are credited to the
+        user's account.
+
+        Supported networks depend on the token (and your partner configuration):
+          - **USDT**: TRX, TON, AVAX, ETH, SOL, BNB
+          - **USDC**: OP, MATIC
+
+        Contact Pay3 to confirm the current token/network matrix for your account.
       requestBody:
         required: true
         content:
@@ -955,22 +647,18 @@ paths:
                 userId:
                   type: string
                   format: uuid
-                  example: "04610acd-01da-4d4d-982f-d12de7dac529"
+                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
                 token:
                   type: string
                   enum: [USDT, USDC]
-                  example: "USDT"
+                  example: USDT
                 network:
                   type: string
                   enum: [TRX, TON, AVAX, ETH, SOL, BNB, OP, MATIC]
-                  example: "TRX"
-              description: >
-                The network options vary depending on the token:
-                  - For **USDT**: TRX, TON, AVAX, ETH, SOL, BNB
-                  - For **USDC**: OP, MATIC
+                  example: TRX
       responses:
         "200":
-          description: Address fetched successfully
+          description: Address fetched successfully.
           content:
             application/json:
               schema:
@@ -978,7 +666,7 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: "Address fetched successfully"
+                    example: Address fetched successfully
                   code:
                     type: integer
                     example: 0
@@ -987,42 +675,28 @@ paths:
                     properties:
                       address:
                         type: string
-                        example: "TUp8HBKRboDH3SZFFFs2qA6iNDCGnzz3bH"
-
+                        description: Deposit address for the requested token/network.
+                        example: TYDzsbVxNkE9oF7g2pQ3rWm5n8kLpJ4hQs
         "400":
-          description: Invalid parameters or unsupported token-network combination
+          description: Invalid parameters or unsupported token/network combination.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
 
   /card/set_card_pin:
     post:
       tags:
-        - Card Service
-      summary: Set ATM card PIN
-      description: |
-        Sets or updates the ATM PIN for a user's card and activates the card if it is not activated. (For physical cards only)
-        - Sandbox: Test cards, mock balances
-        - Production: Real cards & transactions
+        - Cards
+      summary: Set the card PIN
       operationId: setCardPin
-      parameters:
-      - in: header
-        name: X-Environment
-        required: false
-        schema:
-          type: string
-          enum: [sandbox, production]
-        description: |
-          Optional environment override.
-          Defaults to production.
+      description: |
+        Sets or updates the ATM PIN for a card, activating the card if it is not yet
+        active. Physical cards only.
       requestBody:
         required: true
         content:
@@ -1030,83 +704,48 @@ paths:
             schema:
               type: object
               required:
-                - pin
-                - cardId
                 - userId
+                - cardId
+                - pin
               properties:
-                pin:
-                  type: string
-                  description: 6-digit ATM PIN
-                  example: "123456"
-                  minLength: 6
-                  maxLength: 6
-                cardId:
-                  type: string
-                  format: uuid
-                  example: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
                 userId:
                   type: string
                   format: uuid
-                  example: "04610acd-01da-4d4d-982f-d12de7dac529"
+                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                cardId:
+                  type: string
+                  format: uuid
+                  example: cee34fdd-51cc-49bd-b71a-d6bc0653bb34
+                pin:
+                  type: string
+                  description: 6-digit ATM PIN.
+                  minLength: 6
+                  maxLength: 6
+                  example: "123456"
       responses:
         "200":
-          description: Card PIN set successfully
+          description: Card PIN set successfully.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: "Card pin set successfully"
-                  code:
-                    type: integer
-                    example: 0
-
-        "400":
-          description: Invalid parameters or unsupported token-network combination
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-        "500":
-          description: External API or internal server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/SimpleSuccess"
               example:
-                message: Failed to set card pin
-                code: 500
+                message: Card pin set successfully
+                code: 0
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
 
   /card/lock_card:
     post:
       tags:
-        - Card Service
-      summary: Lock card
-      description: |
-        Locks a user's card to prevent further transactions.
-        - Sandbox: Test cards, mock balances
-        - Production: Real cards & transactions
+        - Cards
+      summary: Lock a card
       operationId: lockCard
-      parameters:
-      - in: header
-        name: X-Environment
-        required: false
-        schema:
-          type: string
-          enum: [sandbox, production]
-        description: |
-          Optional environment override.
-          Defaults to production.
+      description: Locks a card to block further transactions.
       requestBody:
         required: true
         content:
@@ -1114,78 +753,41 @@ paths:
             schema:
               type: object
               required:
-                - cardId
                 - userId
+                - cardId
               properties:
-                cardId:
-                  type: string
-                  format: uuid
-                  description: Unique identifier of the card
-                  example: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
                 userId:
                   type: string
                   format: uuid
-                  example: "04610acd-01da-4d4d-982f-d12de7dac529"
-
+                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                cardId:
+                  type: string
+                  format: uuid
+                  example: cee34fdd-51cc-49bd-b71a-d6bc0653bb34
       responses:
         "200":
-          description: Card locked successfully
+          description: Card locked successfully.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: "Card locked successfully"
-                  code:
-                    type: integer
-                    example: 0
-
-        "400":
-          description: Invalid parameters or unsupported token-network combination
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-        "500":
-          description: External API or internal server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/SimpleSuccess"
               example:
-                message: Failed to lock card
-                code: 500
+                message: Card locked successfully
+                code: 0
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
 
   /card/unlock_card:
     post:
       tags:
-        - Card Service
-      summary: Unlock card
-      description: |
-        Unlocks a previously locked card and allows transactions to resume.
-        - Sandbox: Test cards, mock balances
-        - Production: Real cards & transactions
+        - Cards
+      summary: Unlock a card
       operationId: unlockCard
-      parameters:
-      - in: header
-        name: X-Environment
-        required: false
-        schema:
-          type: string
-          enum: [sandbox, production]
-        description: |
-          Optional environment override.
-          Defaults to production.
+      description: Unlocks a previously locked card so transactions can resume.
       requestBody:
         required: true
         content:
@@ -1193,22 +795,70 @@ paths:
             schema:
               type: object
               required:
-                - cardId
                 - userId
+                - cardId
               properties:
-                cardId:
-                  type: string
-                  format: uuid
-                  description: Unique identifier of the card
-                  example: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
                 userId:
                   type: string
                   format: uuid
-                  example: "04610acd-01da-4d4d-982f-d12de7dac529"
-
+                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                cardId:
+                  type: string
+                  format: uuid
+                  example: cee34fdd-51cc-49bd-b71a-d6bc0653bb34
       responses:
         "200":
-          description: Card unlocked successfully
+          description: Card unlocked successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleSuccess"
+              example:
+                message: Card unlocked successfully
+                code: 0
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /card/fetch_transactions:
+    post:
+      tags:
+        - Cards
+      summary: List card transactions
+      operationId: fetchTransactions
+      description: Returns the user's card transactions, paginated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - userId
+                - page
+                - limit
+              properties:
+                userId:
+                  type: string
+                  format: uuid
+                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                page:
+                  type: integer
+                  minimum: 1
+                  description: Page number (1-based).
+                  example: 1
+                limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  description: Number of transactions per page.
+                  example: 10
+      responses:
+        "200":
+          description: Transactions fetched successfully.
           content:
             application/json:
               schema:
@@ -1216,251 +866,133 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: "Card unlocked successfully"
+                    example: Transactions fetched successfully
                   code:
                     type: integer
                     example: 0
-
+                  transactions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Transaction"
         "400":
-          description: Invalid parameters or unsupported operation
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
+          $ref: "#/components/responses/BadRequest"
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
+          $ref: "#/components/responses/Unauthorized"
         "500":
-          description: External API or internal server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                message: Failed to unlock card
-                code: 500
-
-  /card/fetch_transactions:
-      post:
-        tags:
-          - Card Service
-        summary: Fetch transactions
-        description: |
-          Fetches paginated transactions for a user.
-          - Sandbox: Test cards, mock balances
-          - Production: Real cards & transactions
-        operationId: fetchTransactions
-        parameters:
-        - in: header
-          name: X-Environment
-          required: false
-          schema:
-            type: string
-            enum: [sandbox, production]
-          description: |
-            Optional environment override.
-            Defaults to production.
-
-        requestBody:
-          required: true
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                  - page
-                  - limit
-                  - userId
-                properties:
-                  userId:
-                    type: string
-                    format: uuid
-                    example: "04610acd-01da-4d4d-982f-d12de7dac529"
-                  page:
-                    type: integer
-                    minimum: 0
-                    example: 1
-                    description: Page number for pagination
-                  limit:
-                    type: integer
-                    minimum: 1
-                    maximum: 100
-                    example: 10
-                    description: Number of transactions per page
-
-        responses:
-          "200":
-            description: Transactions fetched successfully
-            content:
-              application/json:
-                schema:
-                  type: object
-                  properties:
-                    message:
-                      type: string
-                      example: "Transactions fetched successfully"
-                    transactions:
-                      type: array
-                      items:
-                        type: object
-                        properties:
-                          transactionId:
-                            type: string
-                            example: "txn_123456"
-                          amount:
-                            type: number
-                            format: float
-                            example: 120.75
-                          currency:
-                            type: string
-                            example: "USD"
-                          status:
-                            type: string
-                            example: "COMPLETED"
-                          merchantName:
-                            type: string
-                            example: "Amazon"
-                          transactionDate:
-                            type: string
-                            format: date-time
-                            example: "2025-07-20T14:32:11.000Z"
-                    code:
-                      type: integer
-                      example: 0
-
-          "400":
-            description: Invalid pagination parameters
-            content:
-              application/json:
-                schema:
-                  $ref: "#/components/schemas/ErrorResponse"
-
-          "401":
-            description: Unauthorized
-            content:
-              application/json:
-                schema:
-                  $ref: "#/components/schemas/ErrorResponse"
-
-          "500":
-            description: External API or internal server error
-            content:
-              application/json:
-                schema:
-                  $ref: "#/components/schemas/ErrorResponse"
-                example:
-                  message: Failed to fetch transactions
-                  code: 500
-
-  /card/fetch_deposit_address:
-    post:
-      summary: Fetch crypto deposit address
-      description: Returns a deposit address for the given token and network for the user's account.
-      tags:
-        - Card Service
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [userId, token, network]
-              properties:
-                userId: { type: string, example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7 }
-                token: { type: string, example: USDC }
-                network: { type: string, example: BASE }
-      responses:
-        "200":
-          description: Successful operation
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message: { type: string, example: Address fetched successfully }
-                  code: { type: integer, example: 0 }
-                  data:
-                    type: object
-                    properties:
-                      address: { type: string, example: "0x6b4AE0...dE5b" }
-        "401": { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } } }
-        "500": { description: External API or internal server error, content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } } }
+          $ref: "#/components/responses/ServerError"
 
   /card/issuance_events:
     post:
-      summary: Fetch card issuance progress events
-      description: |
-        Returns the provisioning/issuance progress events for the user. Useful to drive a
-        loading/status UI right after calling `issue_card`.
       tags:
-        - Card Service
-      security:
-        - bearerAuth: []
+        - Cards
+      summary: Fetch card issuance progress events
+      operationId: fetchIssuanceEvents
+      description: |
+        Returns the provisioning/issuance progress events for the user, in order. Poll
+        this right after `issue_card` to drive a loading/status UI. The terminal phases
+        are `done` (success) and `failed`.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [userId]
+              required:
+                - userId
               properties:
-                userId: { type: string, example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7 }
-                applicationId: { type: string, description: Optional }
-                since: { type: string, description: "Optional ISO timestamp; only events after it" }
+                userId:
+                  type: string
+                  format: uuid
+                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                applicationId:
+                  type: string
+                  format: uuid
+                  description: Optional — only events for this card application.
+                  example: 94655d78-71a8-43a5-9654-7c5996ee51c3
+                since:
+                  type: string
+                  format: date-time
+                  description: Optional — only events created after this ISO 8601 timestamp.
+                  example: "2025-11-08T12:55:54.644Z"
       responses:
         "200":
-          description: Successful operation
+          description: Issuance events fetched successfully.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  message: { type: string, example: Issuance events fetched successfully }
-                  code: { type: integer, example: 0 }
+                  message:
+                    type: string
+                    example: Issuance events fetched successfully
+                  code:
+                    type: integer
+                    example: 0
                   data:
                     type: object
                     properties:
                       events:
                         type: array
                         items:
-                          type: object
-                          properties:
-                            phase: { type: string, example: cardholder_created }
+                          $ref: "#/components/schemas/IssuanceEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
 
 webhooks:
   card.issued:
     post:
-      summary: Card issued
+      tags:
+        - Webhooks
+      summary: card.issued
+      operationId: cardIssuedWebhook
       description: |
-        Delivered to the client's registered `webhook_url` when a card is issued.
+        Delivered to your registered `webhook_url` when a card is issued.
 
         **Headers**
         - `X-Pay3-Signature`: `hex(HMAC_SHA256(webhook_secret, rawBody))` — verify with your shared secret.
-        - `X-Pay3-Event`: event type (e.g. `card.issued`).
-        - `X-Pay3-Delivery`: delivery ID (use for idempotent handling of retries).
+        - `X-Pay3-Event`: the event type (e.g. `card.issued`).
+        - `X-Pay3-Delivery`: delivery ID — use it to dedupe retries.
 
-        **Retries**: non-2xx responses are retried with exponential backoff (30s, 60s, 120s … up to 1h).
-        Respond `2xx` quickly and dedupe on `X-Pay3-Delivery`.
+        **Retries**: non-`2xx` responses are retried with exponential backoff
+        (30s, 60s, 120s … up to 1h, max 6 attempts). Respond `2xx` quickly and dedupe
+        on `X-Pay3-Delivery`.
       requestBody:
         content:
           application/json:
             schema:
               type: object
               properties:
-                id: { type: string, description: Delivery ID (matches X-Pay3-Delivery) }
-                type: { type: string, example: card.issued }
-                created_at: { type: string, format: date-time }
-                data: { type: object, description: Event-specific payload (the issued card) }
+                id:
+                  type: string
+                  description: Delivery ID (matches the `X-Pay3-Delivery` header).
+                  example: 7c5996ee-51c3-43a5-9654-94655d7871a8
+                type:
+                  type: string
+                  example: card.issued
+                created_at:
+                  type: string
+                  format: date-time
+                  example: "2025-11-08T12:56:10.120Z"
+                data:
+                  type: object
+                  description: Event-specific payload.
+                  properties:
+                    userId:
+                      type: string
+                      format: uuid
+                      example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                    type:
+                      type: string
+                      example: virtual
+                    card:
+                      $ref: "#/components/schemas/Card"
       responses:
         "200":
-          description: Acknowledged (return any 2xx)
+          description: Acknowledged. Return any `2xx` to confirm receipt.
 
 components:
   securitySchemes:
@@ -1468,6 +1000,9 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+      description: |
+        Bearer access token obtained from `POST /oauth/access-token`.
+        Send as `Authorization: Bearer <accessToken>`.
 
   parameters:
     IdempotencyKey:
@@ -1475,10 +1010,58 @@ components:
       in: header
       required: false
       description: |
-        Unique key (UUID recommended) to make a mutating request safely retryable.
-        The same key replays the first response; a request still in progress returns `409`.
+        Unique key (UUID recommended) that makes a mutating request safely retryable.
+        Reusing the same key replays the first response; a request still in progress
+        returns `409`.
       schema:
         type: string
+
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            message: Invalid request
+            code: 400
+    Unauthorized:
+      description: Missing, invalid, or expired access token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            message: Unauthorized
+            code: 401
+    InvalidCredentials:
+      description: Invalid client credentials.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            message: Invalid client secret
+            code: 400
+    IdempotencyConflict:
+      description: A request with the same `Idempotency-Key` is still in progress.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            message: Request with this Idempotency-Key is already in progress
+            code: 409
+    ServerError:
+      description: Upstream or internal server error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            message: Internal server error
+            code: 500
 
   schemas:
     ErrorResponse:
@@ -1486,7 +1069,270 @@ components:
       properties:
         message:
           type: string
-          example: Invalid request parameters
+          example: Invalid request
         code:
           type: integer
           example: 400
+
+    SimpleSuccess:
+      type: object
+      properties:
+        message:
+          type: string
+          example: Success
+        code:
+          type: integer
+          example: 0
+
+    CardAddress:
+      type: object
+      properties:
+        addressLine1:
+          type: string
+          example: 123 Example Street
+        addressLine2:
+          type: string
+          example: Suite 100
+        city:
+          type: string
+          example: San Francisco
+        state:
+          type: string
+          example: CA
+        country:
+          type: string
+          description: ISO 3166-1 alpha-2 country code.
+          example: US
+        postalCode:
+          type: string
+          example: "94105"
+
+    Card:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: cee34fdd-51cc-49bd-b71a-d6bc0653bb34
+        accountId:
+          type: string
+          format: uuid
+          example: bf9866ad-46e1-43ff-8b21-68a57c67acfc
+        token:
+          type: string
+          description: Provider card token.
+          example: cproxy0000000000000
+        status:
+          type: string
+          example: Active
+        currency:
+          type: string
+          example: USD
+        userName:
+          type: string
+          example: Alex Rivera
+        createTime:
+          type: string
+          format: date-time
+          example: "2025-07-17T04:44:16.964Z"
+        cardNoLastFour:
+          type: string
+          example: "2362"
+        cardAddress:
+          $ref: "#/components/schemas/CardAddress"
+        label:
+          type: string
+          example: Alex Rivera's card
+        useType:
+          type: string
+          example: online
+        balanceId:
+          type: string
+          format: uuid
+          example: f1f70e3a-ce61-4df2-92cc-83ce9666df7d
+        budgetId:
+          type: string
+          format: uuid
+          example: 950661d3-94c6-42d1-bd70-ba4986a1581d
+        bin:
+          type: string
+          example: "537100"
+
+    CardApplication:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 94655d78-71a8-43a5-9654-7c5996ee51c3
+        created_at:
+          type: string
+          format: date-time
+          example: "2025-11-08T12:55:54.644Z"
+        user_id:
+          type: string
+          format: uuid
+          example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+        whitelisted:
+          type: boolean
+          example: false
+        code_redeemed:
+          type: [string, "null"]
+          example: null
+        phone_verified:
+          type: boolean
+          example: false
+        email_verified:
+          type: boolean
+          example: false
+        kyc_verified:
+          type: boolean
+          example: false
+        personal_data:
+          type: [object, "null"]
+          example: null
+        billing_data:
+          type: [object, "null"]
+          example: null
+        order_data:
+          type: [object, "null"]
+          example: null
+        card_issued:
+          type: boolean
+          example: false
+        card_issued_on:
+          type: [string, "null"]
+          format: date-time
+          example: null
+        card_id:
+          type: [string, "null"]
+          format: uuid
+          example: null
+        budget_id:
+          type: [string, "null"]
+          format: uuid
+          example: null
+        kyc_status:
+          type: [string, "null"]
+          example: null
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+        first_name:
+          type: string
+          example: Alex
+        last_name:
+          type: string
+          example: Rivera
+        email:
+          type: [string, "null"]
+          example: alex.rivera@example.com
+        phone_number:
+          type: [string, "null"]
+          example: null
+        telegram_id:
+          type: [string, "null"]
+          example: "835519111"
+        client_id:
+          type: string
+          format: uuid
+          example: 1df64a72-72be-4522-a0ed-62a7a608e6d3
+        created_at:
+          type: string
+          format: date-time
+          example: "2025-11-06T11:24:28.575Z"
+        updated_at:
+          type: [string, "null"]
+          format: date-time
+          example: null
+        signup_type_id:
+          type: string
+          example: "835519111"
+        signup_type:
+          type: string
+          example: TELEGRAM
+        card_issued:
+          type: boolean
+          example: false
+        wallet_id:
+          type: [string, "null"]
+          format: uuid
+          example: null
+        account_id:
+          type: [string, "null"]
+          format: uuid
+          example: null
+        budget_id:
+          type: [string, "null"]
+          format: uuid
+          example: null
+        sumsub_id:
+          type: [string, "null"]
+          example: null
+        kyc_verified:
+          type: [boolean, "null"]
+          example: null
+        cardholder_id:
+          type: [string, "null"]
+          format: uuid
+          example: null
+
+    IssuanceEvent:
+      type: object
+      properties:
+        phase:
+          type: string
+          description: |
+            Current provisioning phase. `done` and `failed` are terminal.
+          enum:
+            - validating
+            - provider_call
+            - db_committed
+            - card_fetched
+            - funds_settled
+            - shipping_requested
+            - done
+            - failed
+          example: provider_call
+        meta:
+          type: object
+          description: Phase-specific metadata (e.g. card type, reason on failure).
+          example:
+            type: virtual
+        application_id:
+          type: [string, "null"]
+          format: uuid
+          example: 94655d78-71a8-43a5-9654-7c5996ee51c3
+        created_at:
+          type: string
+          format: date-time
+          example: "2025-11-08T12:56:01.200Z"
+
+    Transaction:
+      type: object
+      properties:
+        transactionId:
+          type: string
+          example: txn_123456
+        amount:
+          type: number
+          format: float
+          example: 120.75
+        currency:
+          type: string
+          example: USD
+        status:
+          type: string
+          example: COMPLETED
+        merchantName:
+          type: string
+          example: Amazon
+        transactionDate:
+          type: string
+          format: date-time
+          example: "2025-07-20T14:32:11.000Z"
