@@ -4,7 +4,7 @@ info:
   version: "1.2.0"
   description: |
     Pay3 のカード発行・KYC・決済インフラを、御社の UI を保ったまま API で利用するための B2B API です。
-    認証は OAuth アクセストークン（クライアント ID + API キー）。資格情報・Webhook・送信元 IP はパートナーコンソールの「開発者」メニュー、または `/developer/*` で御社自身が管理します。
+    認証は OAuth アクセストークン（クライアント ID + API キー）。資格情報・Webhook・送信元 IP はパートナーコンソールの「開発者」メニューでのみ管理します（API からは操作できません）。
 
     以下はガイドです。各エンドポイントの機械可読な定義は左のメニュー（Auth 以降）を参照してください。
 
@@ -150,8 +150,7 @@ info:
     ## 1. 管理プレーン（Pay3 管理者）
 
     クライアント自体の作成・停止は Pay3 側の管理操作で、御社が呼ぶ API ではありません。
-    御社の資格情報（API キー）・Webhook・送信元 IP は、パートナーコンソールの「開発者」メニュー、
-    または同じ内容の **`/developer/*` API** で御社自身が管理します。
+    御社の資格情報（API キー）・Webhook・送信元 IP は、**パートナーコンソールの「開発者」メニュー**で管理します。
 
     ## 2. データプレーン（B2B クライアント）— OAuth
 
@@ -471,24 +470,12 @@ info:
     **同じ値**（そのユーザーの登録時に確定した貴社の紹介コード）です。名前が二形あるのは経路ごとの
     綴りの違いで、突き合わせは値でそのまま行えます。
 
-    ## Developer（自社の資格情報・Webhook 設定）
+    ## 資格情報・Webhook・送信元 IP の管理
 
-    コンソール「開発者」メニューの API 面です。**操作できるのは呼び出したトークンの client 自身の設定だけ**です
-    （スコープ `client:manage`。鍵を替えられる権限なので、permissions 未設定でも通しません）。
+    API キーの発行・取り消し、Webhook 宛先と署名鍵、送信元 IP のホワイトリストは、**パートナーコンソールの
+    「開発者」メニュー**で操作します。
 
-    - `GET /developer` — 要約 `{ clientName, clientId, apiKeys: [...], webhook: { url, hasSecret, description, events, availableEvents, registeredAt }, ipAllowlist: [...], ipAllowlistRequired, docsUrl }`。鍵は**マスク表示のみ**。`events` が `null` = 全イベントを購読
-    - `GET /developer/api-keys` — キー一覧 `{ data: [{ id, name, masked, status, createdAt, lastUsedAt, revokedAt, legacy }] }`（`status` は `active` / `revoked`）
-    - `POST /developer/api-keys` — `{ "name": "本番連携" }` で新しいキーを発行。**この応答でだけ** `key`（`pay3_sk_…`）を返します。有効なキーは同時に 10 本まで（超えると 409）。複数のキーを持ち、御社のタイミングで切り替えてください
-    - `PATCH /developer/api-keys/{id}` — `{ "name": "..." }` で名前を変更（1〜64 文字。ラベルは御社が自由に付けられます）
-    - `DELETE /developer/api-keys/{id}` — キーを取り消し（即時・不可逆）。2026-09-18 より前に発行した初期キーは `id = "legacy"` で取り消せます
-    - `PUT /developer/webhook` — `{ "url": "https://…", "description"?: "本番の受信サーバー", "events"?: ["card.issued", …] }` で宛先を登録・変更（`url: null` で解除。説明・購読も消えます）。https の絶対 URL のみ（localhost・資格情報入りは 400）。`events` は **webhooks.md** の語彙から 1 つ以上（省略 = 全部。空配列は 400）。`description` は 120 文字まで。署名鍵が未発行なら発行し、応答の `secretIssued` に返します
-    - `GET /developer/webhook/secret` — 署名鍵を表示 `{ webhookSecret }`（未発行なら 409）。呼び出しは監査ログに残ります
-    - `POST /developer/webhook/secret` — 署名鍵を再発行 `{ webhookSecret }`。旧鍵は即時失効します
-    - `POST /developer/webhook/test` — `ping` イベントを 1 通配信します（宛先未登録なら 409）。到達は配信ログで確認します
-    - `PUT /developer/ip-allowlist` — `{ "entries": ["203.0.113.10", "198.51.100.0/24"] }` で御社から Pay3 API を呼ぶ**送信元 IP のホワイトリスト**を設定（IPv4 / IPv6 / CIDR、最大 20 件）。**登録した IP からの呼び出しだけを受け付けます。** `ipAllowlistRequired` が `true` のクライアント（御社を含む新規のクライアント）は、**1 件も登録していない間は API キー経由の呼び出しが 403 `ip_not_registered`** になります。登録外の IP からは 403 `ip_not_allowed`。コンソールの操作はどちらの対象にもならないので、登録・修正は常にコンソールから行えます
-    - `GET /developer/webhook/deliveries?limit=` — 配信ログ（新しい順、1〜100、既定 20）。各行は `{ id, eventType, status, attempts, maxAttempts, lastStatusCode, lastError, payload, createdAt, deliveredAt, nextAttemptAt }`。`status` の語彙は **webhooks.md** のとおり
-
-    秘密値（API 鍵・署名鍵）が平文で返るのは「発行した瞬間の 1 回」だけです。控えを失った場合は再発行してください。
+    秘密値（API キー・署名鍵）が平文で表示されるのは「発行した瞬間の 1 回」だけです。控えを失った場合はコンソールで再発行してください。
 
     ## 未知のパス
 
@@ -773,7 +760,7 @@ info:
 
     ## 送信元 IP（ホワイトリスト）
 
-    API キーで取得したトークンでの呼び出しは、**コンソール「開発者 → 送信元 IP」（または `PUT /developer/ip-allowlist`）に
+    API キーで取得したトークンでの呼び出しは、**コンソール「開発者 → 送信元 IP」に
     登録した IP からのみ**受け付けます。sandbox / 本番とも同じです。
 
     - 1 件も登録していない間は、どのエンドポイントも `403 ip_not_registered` です（コンソールの操作は対象外なので、
@@ -1389,11 +1376,11 @@ info:
 
     ## 設定
 
-    受信エンドポイントと署名鍵は、**コンソールの「開発者 → Webhook」**（または API `PUT /developer/webhook` /
-    `GET|POST /developer/webhook/secret`、**endpoints.md**）で御社自身が登録・表示・再発行できます。
+    受信エンドポイントと署名鍵は、**コンソールの「開発者 → Webhook」**で御社自身が登録・表示・再発行できます
+    （API キーからは操作できません）。
     - 受信エンドポイント（HTTPS）と任意の説明（例: 本番の受信サーバー）
     - 購読するイベント（下の「イベント種別」から選択。既定は全部。`ping` は購読設定に関係なく届きます）
-    - 署名検証用シークレット（登録時に発行。コンソールの鍵アイコン / `GET /developer/webhook/secret` で**いつでも表示**でき、再発行すると旧鍵は即時失効）
+    - 署名検証用シークレット（登録時に発行。コンソールの鍵アイコンで**いつでも表示**でき、再発行すると旧鍵は即時失効）
     - 購読していないイベントは配信されず、配信ログにも載りません
 
     ## 配信フォーマット
@@ -1516,8 +1503,7 @@ info:
 
     ## 再配信・テスト
 
-    - テスト配信: コンソール「開発者 → Webhook」の「テスト送信」、または `POST /developer/webhook/test` で
-      `ping` イベントを 1 通配信します。到達は同じ画面の配信ログ（`GET /developer/webhook/deliveries`）で確認できます。
+    - テスト配信: コンソール「開発者 → Webhook」の「テスト送信」で `ping` イベントを 1 通配信します。到達は同じ画面の配信ログで確認できます。
     - 失敗した配信は Pay3 側が **5 分周期で自動再送**します（上記のリトライ回数まで）。手動での再配信が必要な場合は
       配信ログの `id` を添えて Pay3 にご連絡ください。
 
@@ -1543,8 +1529,6 @@ tags:
     description: "Partner pool: balance, deposit address, top-up instructions, ledger"
   - name: Referral codes
     description: "Referral codes and sign-up links attributed to your client"
-  - name: Developer
-    description: "Your own credentials, webhook endpoint, and source-IP allowlist (same as the console's Developer menu)"
 
 security:
   - bearerAuth: []
@@ -3765,375 +3749,6 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
 
 
-  /developer:
-    get:
-      tags:
-        - Developer
-      summary: Developer settings summary (your own client)
-      operationId: getDeveloperSummary
-      description: |
-        Everything the partner console's "Developer" menu shows, for the calling client only
-        (scope `client:manage`). API keys are **masked**; signing keys are never included.
-        `webhook.events` = `null` means the endpoint subscribes to every event.
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: Successful operation
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  clientName: { type: string, example: "Partner A" }
-                  clientId: { type: string, example: "client_0123456789abcdef0123456789abcdef" }
-                  apiKeys:
-                    type: array
-                    items: { $ref: "#/components/schemas/ApiKey" }
-                  webhook: { $ref: "#/components/schemas/WebhookSettings" }
-                  ipAllowlist:
-                    type: array
-                    items: { type: string }
-                    example: ["203.0.113.10", "198.51.100.0/24"]
-                  ipAllowlistRequired:
-                    type: boolean
-                    description: When `true`, API-key calls are rejected with 403 `ip_not_registered` until at least one IP is registered. Console access is never subject to the allowlist.
-                  docsUrl: { type: string, example: "https://developer.pay-3.io/" }
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-  /developer/api-keys:
-    get:
-      tags:
-        - Developer
-      summary: List API keys (masked)
-      operationId: listApiKeys
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: Successful operation
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items: { $ref: "#/components/schemas/ApiKey" }
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-    post:
-      tags:
-        - Developer
-      summary: Issue a new API key
-      operationId: createApiKey
-      description: |
-        Issues a new key (`pay3_sk_test_…` on sandbox, `pay3_sk_live_…` on production).
-        **The plaintext `key` is returned only in this response** — Pay3 does not store it.
-        Up to 10 active keys per client (409 beyond that). Keep several keys and switch over at your own pace.
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name]
-              properties:
-                name: { type: string, minLength: 1, maxLength: 64, example: "production backend" }
-      responses:
-        "201":
-          description: Key issued
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/ApiKey"
-                  - type: object
-                    properties:
-                      key:
-                        type: string
-                        description: Plaintext key. Shown once.
-                        example: "pay3_sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "409":
-          description: Too many active keys (limit 10)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /developer/api-keys/{id}:
-    parameters:
-      - name: id
-        in: path
-        required: true
-        description: Key id from the list. Keys issued before 2026-09-18 are addressed as `legacy`.
-        schema: { type: string }
-    patch:
-      tags:
-        - Developer
-      summary: Rename an API key
-      operationId: renameApiKey
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name]
-              properties:
-                name: { type: string, minLength: 1, maxLength: 64 }
-      responses:
-        "200":
-          description: Renamed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ApiKey"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-    delete:
-      tags:
-        - Developer
-      summary: Revoke an API key (immediate, irreversible)
-      operationId: revokeApiKey
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: Revoked
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ApiKey"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-  /developer/webhook:
-    put:
-      tags:
-        - Developer
-      summary: Register, change, or clear the webhook endpoint
-      operationId: setWebhook
-      description: |
-        `url` must be an absolute `https://` URL (localhost and URLs with credentials are rejected with 400).
-        `events` is a subset of `availableEvents` (omit = subscribe to all; an empty array is 400).
-        `description` is free text up to 120 characters. `url: null` clears the endpoint together with
-        its description and subscription. If no signing key exists yet, one is issued and returned
-        **once** in `secretIssued`; otherwise `secretIssued` is `null`.
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [url]
-              properties:
-                url: { type: string, nullable: true, example: "https://api.example.com/webhooks/pay3" }
-                description: { type: string, nullable: true, maxLength: 120, example: "production receiver" }
-                events:
-                  type: array
-                  nullable: true
-                  items: { $ref: "#/components/schemas/WebhookEventType" }
-      responses:
-        "200":
-          description: Saved
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/WebhookSettings"
-                  - type: object
-                    properties:
-                      secretIssued:
-                        type: string
-                        nullable: true
-                        description: Newly issued signing key. Shown once; `null` when one already existed.
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-  /developer/webhook/secret:
-    get:
-      tags:
-        - Developer
-      summary: Show the current webhook signing key
-      operationId: getWebhookSecret
-      description: Returns the key used for `X-Pay3-Signature`. Every call is written to the audit log. 409 if none has been issued yet.
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: Successful operation
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  webhookSecret: { type: string }
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "409":
-          description: No signing key issued yet (register a webhook URL first)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-    post:
-      tags:
-        - Developer
-      summary: Rotate the webhook signing key
-      operationId: rotateWebhookSecret
-      description: Issues a new signing key. The previous one stops validating immediately.
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: Rotated
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  webhookSecret: { type: string }
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-  /developer/webhook/test:
-    post:
-      tags:
-        - Developer
-      summary: Send a `ping` test event to the registered endpoint
-      operationId: sendTestWebhookEvent
-      description: Enqueues one `ping` delivery. Check arrival in the delivery log. 409 if no endpoint is registered.
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: Enqueued
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success: { type: boolean, example: true }
-                  eventType: { type: string, example: ping }
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "409":
-          description: No webhook endpoint registered
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /developer/webhook/deliveries:
-    get:
-      tags:
-        - Developer
-      summary: Webhook delivery log (newest first)
-      operationId: listWebhookDeliveries
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: limit
-          in: query
-          required: false
-          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
-      responses:
-        "200":
-          description: Successful operation
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items: { $ref: "#/components/schemas/WebhookDelivery" }
-                  paging:
-                    type: object
-                    properties:
-                      limit: { type: integer }
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-  /developer/ip-allowlist:
-    put:
-      tags:
-        - Developer
-      summary: Set the source-IP allowlist for API-key calls
-      operationId: setIpAllowlist
-      description: |
-        Replaces the whole list (IPv4 / IPv6 / CIDR, up to 20 entries). **Only calls from listed
-        addresses are accepted.** While the list is empty and `ipAllowlistRequired` is `true`, API-key
-        calls are rejected with 403 `ip_not_registered`; calls from unlisted addresses get 403 `ip_not_allowed`.
-        Console access is never subject to the allowlist, so you can always fix the list from the console.
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [entries]
-              properties:
-                entries:
-                  type: array
-                  maxItems: 20
-                  items: { type: string }
-                  example: ["203.0.113.10", "198.51.100.0/24"]
-      responses:
-        "200":
-          description: Saved
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ipAllowlist:
-                    type: array
-                    items: { type: string }
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-
 components:
   securitySchemes:
     bearerAuth:
@@ -4247,51 +3862,6 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
   schemas:
-    ApiKey:
-      type: object
-      properties:
-        id: { type: string, example: "9d2f1c9e-2c6e-4d1f-9a41-3c7d9f0b1a22" }
-        name: { type: string, example: "production backend" }
-        masked: { type: string, example: "pay3_sk_test_…C6mm" }
-        status: { type: string, enum: [active, revoked] }
-        createdAt: { type: string, format: date-time }
-        lastUsedAt: { type: string, format: date-time, nullable: true }
-        revokedAt: { type: string, format: date-time, nullable: true }
-        legacy:
-          type: boolean
-          description: "`true` for the pre-2026-09-18 key format (revocable via id `legacy`)."
-    WebhookEventType:
-      type: string
-      enum: [user.registered, user.kyc.updated, card.issued, card.activated, pool.deposit.credited, pool.transfer.completed, pool.transfer.failed]
-    WebhookSettings:
-      type: object
-      properties:
-        url: { type: string, nullable: true, example: "https://api.example.com/webhooks/pay3" }
-        hasSecret: { type: boolean }
-        description: { type: string, nullable: true }
-        events:
-          type: array
-          nullable: true
-          description: "`null` = subscribed to every event"
-          items: { $ref: "#/components/schemas/WebhookEventType" }
-        availableEvents:
-          type: array
-          items: { $ref: "#/components/schemas/WebhookEventType" }
-        registeredAt: { type: string, format: date-time, nullable: true }
-    WebhookDelivery:
-      type: object
-      properties:
-        id: { type: string }
-        eventType: { type: string, example: card.issued }
-        status: { type: string, description: "See webhooks.md for the vocabulary" }
-        attempts: { type: integer }
-        maxAttempts: { type: integer }
-        lastStatusCode: { type: integer, nullable: true }
-        lastError: { type: string, nullable: true }
-        payload: { type: object, additionalProperties: true }
-        createdAt: { type: string, format: date-time }
-        deliveredAt: { type: string, format: date-time, nullable: true }
-        nextAttemptAt: { type: string, format: date-time, nullable: true }
     KycStages:
       type: object
       description: |

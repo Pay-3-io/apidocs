@@ -219,24 +219,12 @@ ATM PIN を設定。
 **同じ値**（そのユーザーの登録時に確定した貴社の紹介コード）です。名前が二形あるのは経路ごとの
 綴りの違いで、突き合わせは値でそのまま行えます。
 
-## Developer（自社の資格情報・Webhook 設定）
+## 資格情報・Webhook・送信元 IP の管理
 
-コンソール「開発者」メニューの API 面です。**操作できるのは呼び出したトークンの client 自身の設定だけ**です
-（スコープ `client:manage`。鍵を替えられる権限なので、permissions 未設定でも通しません）。
+API キーの発行・取り消し、Webhook 宛先と署名鍵、送信元 IP のホワイトリストは、**パートナーコンソールの
+「開発者」メニュー**で操作します。
 
-- `GET /developer` — 要約 `{ clientName, clientId, apiKeys: [...], webhook: { url, hasSecret, description, events, availableEvents, registeredAt }, ipAllowlist: [...], ipAllowlistRequired, docsUrl }`。鍵は**マスク表示のみ**。`events` が `null` = 全イベントを購読
-- `GET /developer/api-keys` — キー一覧 `{ data: [{ id, name, masked, status, createdAt, lastUsedAt, revokedAt, legacy }] }`（`status` は `active` / `revoked`）
-- `POST /developer/api-keys` — `{ "name": "本番連携" }` で新しいキーを発行。**この応答でだけ** `key`（`pay3_sk_…`）を返します。有効なキーは同時に 10 本まで（超えると 409）。複数のキーを持ち、御社のタイミングで切り替えてください
-- `PATCH /developer/api-keys/{id}` — `{ "name": "..." }` で名前を変更（1〜64 文字。ラベルは御社が自由に付けられます）
-- `DELETE /developer/api-keys/{id}` — キーを取り消し（即時・不可逆）。2026-09-18 より前に発行した初期キーは `id = "legacy"` で取り消せます
-- `PUT /developer/webhook` — `{ "url": "https://…", "description"?: "本番の受信サーバー", "events"?: ["card.issued", …] }` で宛先を登録・変更（`url: null` で解除。説明・購読も消えます）。https の絶対 URL のみ（localhost・資格情報入りは 400）。`events` は [webhooks.md](webhooks.md) の語彙から 1 つ以上（省略 = 全部。空配列は 400）。`description` は 120 文字まで。署名鍵が未発行なら発行し、応答の `secretIssued` に返します
-- `GET /developer/webhook/secret` — 署名鍵を表示 `{ webhookSecret }`（未発行なら 409）。呼び出しは監査ログに残ります
-- `POST /developer/webhook/secret` — 署名鍵を再発行 `{ webhookSecret }`。旧鍵は即時失効します
-- `POST /developer/webhook/test` — `ping` イベントを 1 通配信します（宛先未登録なら 409）。到達は配信ログで確認します
-- `PUT /developer/ip-allowlist` — `{ "entries": ["203.0.113.10", "198.51.100.0/24"] }` で御社から Pay3 API を呼ぶ**送信元 IP のホワイトリスト**を設定（IPv4 / IPv6 / CIDR、最大 20 件）。**登録した IP からの呼び出しだけを受け付けます。** `ipAllowlistRequired` が `true` のクライアント（御社を含む新規のクライアント）は、**1 件も登録していない間は API キー経由の呼び出しが 403 `ip_not_registered`** になります。登録外の IP からは 403 `ip_not_allowed`。コンソールの操作はどちらの対象にもならないので、登録・修正は常にコンソールから行えます
-- `GET /developer/webhook/deliveries?limit=` — 配信ログ（新しい順、1〜100、既定 20）。各行は `{ id, eventType, status, attempts, maxAttempts, lastStatusCode, lastError, payload, createdAt, deliveredAt, nextAttemptAt }`。`status` の語彙は [webhooks.md](webhooks.md) のとおり
-
-秘密値（API 鍵・署名鍵）が平文で返るのは「発行した瞬間の 1 回」だけです。控えを失った場合は再発行してください。
+秘密値（API キー・署名鍵）が平文で表示されるのは「発行した瞬間の 1 回」だけです。控えを失った場合はコンソールで再発行してください。
 
 ## 未知のパス
 
