@@ -2,7 +2,1527 @@ openapi: 3.0.3
 info:
   title: Pay3 External API
   version: "1.2.0"
-  description: A system that allows external corporations (Partners) to use Pay3’s card issuance, KYC, and payment infrastructure while maintaining their own UI.
+  description: |
+    Pay3 のカード発行・KYC・決済インフラを、御社の UI を保ったまま API で利用するための B2B API です。
+    認証は OAuth アクセストークン（クライアント ID + API キー）。資格情報・Webhook・送信元 IP はパートナーコンソールの「開発者」メニュー、または `/developer/*` で御社自身が管理します。
+
+    以下はガイドです。各エンドポイントの機械可読な定義は左のメニュー（Auth 以降）を参照してください。
+
+    # Quickstart
+
+    Pay3 External (B2B) API を使って、ユーザー登録から仮想カード発行までを通す最短手順です。
+
+    - **Base URL (sandbox)**: `https://api-staging.pay-3.io/functions/v1/external-service`
+    - 認証は **OAuth アクセストークン**（クライアント ID と API キーで取得）。クライアントの作成は Pay3 が行います。
+    - フロントエンド（ユーザー向け画面）は御社で実装します。本 API はバックエンドのみを提供します。
+
+    ## 0. 事前準備
+
+    Pay3 が御社用のクライアントを作成し、パートナーコンソールに御社の担当者を招待します。
+    コンソールの「開発者」メニューで **クライアント ID（`client_` + 32 桁の 16 進数）** を確認し、
+    **API キー（`pay3_sk_test_…` = サンドボックス / `pay3_sk_live_…` = 本番）** を発行してください。
+    キーの全文は発行した瞬間にだけ表示されます（Pay3 側にも平文は残りません）。控えを失った場合は再発行してください。
+    続けて同じ画面で **送信元 IP** を登録します — 登録した IP からの呼び出しだけを受け付けます
+    （未登録の間は 403 `ip_not_registered`）。
+
+    ## 1. アクセストークンを取得
+
+    ```bash
+    curl -X POST "$BASE_URL/oauth/access-token" \
+      -H "Content-Type: application/json" \
+      -d '{ "clientId": "client_<32 hex>", "clientSecret": "pay3_sk_test_..." }'
+    # => { "success": true, "accessToken": "<token>" }
+    ```
+
+    以降の API 呼び出しは `Authorization: Bearer <accessToken>` を付けます。トークンの有効期限は既定1時間です。
+    スキームは **`Bearer` のみ**受理します（大文字小文字は区別しません）— `Basic` 等の他のスキーム語や、
+    スキーム語を省いたトークン単体は `401` です。詳細は **authentication.md**。
+
+    ## 2. ユーザーを登録
+
+    ```bash
+    curl -X POST "$BASE_URL/users/register" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -d '{ "signup_type": "EMAIL", "signup_type_id": "taro@example.com",
+            "email": "taro@example.com", "first_name": "Taro", "last_name": "Yamada" }'
+    # => { "data": { "userId": "<uuid>", ... }, "code": 0 }
+    ```
+
+    > `signup_type`（`EMAIL`/`PHONE`/`TELEGRAM`）と `signup_type_id`（その識別子）は**必須**です。
+
+    登録したユーザーは御社クライアントに紐づき（テナント分離）、他クライアントからは参照できません。
+
+    ## 3. KYC を実施（カード発行の前提）
+
+    ```bash
+    # Sumsub アクセストークンを取得し、御社UIで本人確認を完了させる
+    curl -X POST "$BASE_URL/kyc/access-token" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -d '{ "userId": "<uuid>" }'
+
+    # 本人確認完了後、KYC を submit（口座/カード基盤のセットアップを起動）
+    curl -X POST "$BASE_URL/kyc/submit" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -H "Idempotency-Key: <unique-key>" \
+      -d '{ "userId": "<uuid>", "applicantId": "<sumsub-applicant-id>" }'
+    ```
+
+    ## 4. カードを発行
+
+    ```bash
+    curl -X POST "$BASE_URL/card/issue_card" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -H "Idempotency-Key: <unique-key>" \
+      -d '{ "userId": "<uuid>", "type": "virtual" }'
+    # => { "data": { ...card }, "code": 0 }
+    ```
+
+    - `type`: `"virtual"` または `"physical"`
+    - `amount`（任意）: 発行と同時にユーザー残高へ載せる入金額。省略時は `0`。
+    - `bin`（任意）: 発行する BIN。省略時はその種別を出せる先頭 BIN（サンドボックスの virtual では `537100`）。
+      値域と組み合わせの制約は **endpoints.md の「カード BIN の値域」** を参照。
+    - **発行価格は Pay3 側（SystemConfig）で一元管理**され、API では指定しません。
+    - **発行にはユーザー残高が必要です**（発行価格ぶん）。足りない場合は **400（事前拒否）/ 402（発行途中で
+      徴収が尽きた。カードは Pay3 が閉じます）** の 2 系統で、必要額をハードコードせず `status` / `code` で
+      分岐してください →
+      **endpoints.md「残高が足りないときは 400 と 402 の 2 系統があります」**
+    - **`kyc/submit` は口座/カード基盤のセットアップを「起動」する非同期処理**です。セットアップが終わる前に
+      発行を叩くと **409**（カードは作られません）が返るので、`user.kyc.updated` Webhook か
+      `GET /users/{userId}` の `kycStatus` を確認してから、新しい `Idempotency-Key` で再実行してください。
+    - 金銭が動く操作（発行・KYC submit）には必ず **`Idempotency-Key`** を付けてください。
+
+    BIN を指定して発行する場合（例: Visa の Pay3 Card）:
+
+    ```bash
+    curl -X POST "$BASE_URL/card/issue_card" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -H "Idempotency-Key: <unique-key>" \
+      -d '{ "userId": "<uuid>", "type": "virtual", "bin": "45492418" }'
+    # => { "data": { ..., "bin": "45492418" }, "code": 0 }
+    ```
+
+    発行前に価格を確認したい場合は見積もりを取れます（**金銭は動きません**）:
+
+    ```bash
+    curl -X POST "$BASE_URL/card/quote" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -d '{ "userId": "<uuid>", "type": "virtual", "bin": "45492418" }'
+    # => {
+    #      "message": "Quote generated",
+    #      "data": { "bin": "45492418", "form_factor": "virtual", "country": null, "currency": "USD",
+    #                "price": "5.00", "estimated_shipping": null, "total": "5.00" },
+    #      "code": 0
+    #    }
+    ```
+
+    - `type` を省略すると `physical` として解決されます。**virtual を見積もるときは必ず `type` を付けてください。**
+    - カタログに無い `bin`、その BIN で出せない `type` は **400**（`Unsupported card bin/form factor`）で返ります。
+    - **金額（`price` / `total` / `estimated_shipping`）は小数 2 桁固定の「文字列」**です（`"5.00"`。JSON の数値ではありません）。
+      `estimated_shipping` は該当しないとき（virtual、または `country` 未指定）`null` — **「無料」ではなく「対象外」**の意味です。
+
+    ## 5. 発行進捗・カード情報を確認
+
+    ```bash
+    # 発行進捗イベント（ローディングUI用）
+    curl -X POST "$BASE_URL/card/issuance_events" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -d '{ "userId": "<uuid>" }'
+
+    # 発行済みカード一覧
+    curl -X POST "$BASE_URL/card/fetch_cards" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -d '{ "userId": "<uuid>" }'
+    ```
+
+    ## 6. イベントを受け取る（任意）
+
+    カード発行などのイベントを御社システムへ push 受信するには **Webhooks** を設定してください。
+
+    ---
+    次に読む: **Authentication** / **Endpoints** / **Webhooks**
+
+    ---
+
+    # Authentication
+
+    Pay3 External API の認証は2層に分かれています。
+
+    ## 1. 管理プレーン（Pay3 管理者）
+
+    クライアント自体の作成・停止は Pay3 側の管理操作で、御社が呼ぶ API ではありません。
+    御社の資格情報（API キー）・Webhook・送信元 IP は、パートナーコンソールの「開発者」メニュー、
+    または同じ内容の **`/developer/*` API** で御社自身が管理します。
+
+    ## 2. データプレーン（B2B クライアント）— OAuth
+
+    御社が実 API を呼ぶときは、クライアント資格情報でアクセストークンを取得します。
+
+    ```bash
+    curl -X POST "$BASE_URL/oauth/access-token" \
+      -H "Content-Type: application/json" \
+      -d '{ "clientId": "client_<32 hex>", "clientSecret": "pay3_sk_test_..." }'
+    # => { "success": true, "accessToken": "<token>" }
+    ```
+
+    - 取得したトークンを **`Authorization: Bearer <accessToken>`** で送ります。
+      スキームは **`Bearer` のみ**受理します（RFC 7235 のとおり大文字小文字は区別しないので `bearer` でも通ります）。
+      `Basic` など他のスキーム語や、スキーム語を省いてトークンだけを送った場合は
+      **`401 { "message": "Unauthorized", "code": 401 }`** になります。
+    - ヘッダの中身は **半角スペース 1 個で区切った 2 語ちょうど**（`Bearer` ＋ トークン）にしてください。
+      区切りが二重スペースやタブになっている、トークンの後ろに余計な語が付いている、といった場合は
+      同じ **`401`** です（トークン自体が正しくても通りません）。
+      文字列を組み立てるときは `"Bearer " + accessToken.trim()` のように整形してください。
+      なお**値の末尾のスペースは HTTP の仕様上そこで取り除かれる**ため、`401` にはなりません。
+    - 既定の有効期限は **1時間**。失効後は再取得してください。
+    - `clientId` は **クライアント ID（`client_` + 32 桁の 16 進数）**、`clientSecret` は **API キー
+      （`pay3_sk_test_…` = サンドボックス / `pay3_sk_live_…` = 本番）**。どちらもコンソールの「開発者」で確認できます
+      （API キーは発行した瞬間にだけ全文が表示されます。Pay3 側にも平文は残りません。控えを失った場合は再発行してください）。
+      2026-09-18 より前に発行されたクライアントは、従来どおり表示名（`client_name`）と旧形式のキーでも通ります。
+    - トークンに含まれるのは **クライアント識別子・発行時刻・有効期限** だけです（`api_key` は含まれません）。
+      形式は Pay3 内部の実装詳細なので、**トークンをデコードして中身に依存しないでください**（予告なく変わります）。
+
+    ### エラー
+
+    このエンドポイントのエラーも、他と同じ `{ message, code }` の **2 キー**です。
+
+    | ステータス | 本文 | 意味・対処 |
+    |---|---|---|
+    | `400` | `{ "message": "Invalid JSON body", "code": 400 }` | ボディが JSON として読めません（末尾カンマ・閉じ括弧漏れ・空ボディなど）。**入力の誤りが `500` になることはありません** |
+    | `400` | `{ "message": "Client ID or name is required", "code": 400 }` | `clientId` が入っていません |
+    | `401` | `{ "message": "Invalid client credentials", "code": 401 }` | `clientId` と `clientSecret` の組み合わせが通りません。**`clientId` が見つからない場合と `clientSecret` が一致しない場合は同じ応答**です（どちらだったかは返しません）。**`clientId` はクライアント ID（`client_…`）です**（表示名や内部 UUID ではありません。2026-09-18 より前のクライアントは表示名も通ります）。**あわせて、メソッドが `POST` であることも確認してください**（`GET` など他のメソッドは `404` になります — 下記） |
+    | `500` | `{ "message": "Failed to resolve client", "code": 500 }` / `{ "message": "Failed to issue access token", "code": 500 }` | Pay3 側の障害です。そのまま再送してください |
+
+    > `401` を 2 通に分けない理由: 分けると総当たりで**クライアント名の在否だけ**が判るためです。
+    > 設定を切り分けるときは `clientId`（`client_…`）と `clientSecret`（`pay3_sk_…`）の両方を確認してください。キーの接頭辞で環境（test / live）が分かります。
+    > Pay3 側にはどちらで外れたかのログが残るので、判らないときはお問い合わせください。
+
+    このエンドポイントは **`POST` のみ**です。`GET` / `PUT` / `DELETE` で叩いた場合は
+    **`404 { "message": "Unknown endpoint. Check the HTTP method and path against docs/api.", "code": 404 }`**
+    を返します（認証は関係しないので `401` にはなりません）。**メソッドの間違いが「資格情報が違う」に
+    見えないように**、この判定は認証より前に行っています。
+
+    ## テナント分離
+
+    - 御社が `users/register` で作成したユーザーは、御社クライアントに紐づきます。
+    - 各データ操作はクライアント境界で隔離され、**他クライアントのユーザー／カードにはアクセスできません**（存在しても 404 を返します）。
+    - 複数クライアントは互いに不可視です。
+
+    ## 資格情報の取り扱い
+
+    - API キー（client secret）とアクセストークンはサーバー側でのみ保持し、フロントエンドやログに出さないでください。
+    - アクセストークンの漏洩は**有効期限（既定 1 時間）で自然に失効**します。API キーの漏洩は失効しないため、疑いがある場合はコンソールの「開発者」で**新しいキーを発行し、切り替えが済んだら古いキーを取り消して**ください。キーは名前を付けて複数持てるので、無停止で入れ替えられます。
+
+    ---
+
+    # Environments
+
+    | 環境 | 用途 | 外部連携 | Base URL |
+    |---|---|---|---|
+    | **sandbox (Development)** | 御社の結合テスト用。偽カード・偽KYCで安全に試せる | カード基盤サンドボックス / Sumsub sandbox | `https://api-staging.pay-3.io/functions/v1/external-service` |
+    | **production** | 本番 | カード基盤本番 / Sumsub 本番 | `https://api.pay-3.io/functions/v1/external-service` |
+
+    いずれも**ベース URL は末尾の `/external-service` まで含みます**（仕様書 §2 と同じ定義）。
+    API のパスはすべてそのベース URL の直下です（例: `GET {BASE_URL}/pool/balance`）。
+
+    ## sandbox の使い方
+
+    1. Pay3 からパートナーコンソール（sandbox: `https://console-staging.pay-3.io`）の招待を受け取り、「開発者」メニューで
+       クライアント ID を確認し、API キーを発行して、送信元 IP を登録する。
+    2. **Quickstart** の手順を sandbox Base URL に対して実行。
+    3. カード発行・KYC は sandbox プロバイダに対して行われ、実課金・実発行は起きません。
+    4. プールへの入金は **USDC / Ethereum Sepolia（テストネット）のみ**です。入金先アドレスと通貨・チェーンは
+       `GET /pool/deposit_address` とコンソールの「プール」に表示されます（**pool.md**）。
+       本番は USDT / TRON です。**表示された通貨・チェーン以外を同じアドレスへ送ると着金しません。**
+
+    ## 動作確認のおすすめ順
+
+    1. `oauth/access-token` でトークン取得（認証の疎通）
+    2. `users/register` でユーザー作成
+    3. `kyc/access-token` → 本人確認 → `kyc/submit`
+    4. `card/issue_card`（`Idempotency-Key` 付き）
+    5. `card/issuance_events` / `fetch_cards` で結果確認
+    6. Webhook を設定して `webhooks/test` で受信確認
+
+    ## 注意
+
+    - sandbox と production は**別々のクライアント資格情報**（`pay3_sk_test_…` / `pay3_sk_live_…`）です。混在させないでください。
+    - production のクレデンシャル・Webhook secret はサーバー側のみで管理してください。
+
+    ---
+
+    # Endpoints
+
+    データプレーンの全エンドポイント。すべて `Authorization: Bearer <accessToken>` が必要です。
+    レスポンスは概ね `{ message, data, code }`（`code: 0` が成功）の形です。エラーは `{ message, code }` と適切な HTTP ステータス。
+
+    Base URL (sandbox): `https://api-staging.pay-3.io/functions/v1/external-service`
+
+    ## Users
+
+    ### POST /users/register
+    ユーザーを作成し、御社クライアントに紐づける。
+    - body: `{ signup_type, signup_type_id, first_name, last_name?, email?, phone_number?, telegram_id? }`
+      - **`signup_type`（必須）**: `"EMAIL"` | `"PHONE"` | `"TELEGRAM"`
+      - **`signup_type_id`（必須）**: signup_type に対応する識別子（EMAIL ならメールアドレス、PHONE なら電話番号、TELEGRAM なら telegram id）
+    - 200: `{ data: { userId, first_name, last_name, card_issued }, code: 0 }`
+    - 例: `{ "signup_type": "EMAIL", "signup_type_id": "taro@example.com", "email": "taro@example.com", "first_name": "Taro" }`
+    - **冪等**（`Idempotency-Key` は不要）: 同じ `(signup_type, signup_type_id)` を再送すると
+      **同じ `userId`** を 200 で返し、人は増えません。`EMAIL` / `PHONE` / `TELEGRAM` のどれでも同じです。
+      `?ref=` 付きリンク経由で登録済みの方も同じ集合として引き当てます（**users.md**）
+      同一判定は `signup_type_id` の**バイト完全一致**です（Pay3 側で正規化しません。
+      EMAIL は小文字・PHONE は E.164 に固定して送ってください）
+    - 400: リクエストの内容の誤り。**入力の誤りが `500` になることはありません**
+      - **ボディが JSON として読めない**（末尾カンマ・閉じ括弧漏れ・空ボディなど。
+        `{ message: "Invalid JSON body", code: 400 }`）
+      - `signup_type` が `EMAIL` / `PHONE` / `TELEGRAM` 以外（`{ message: "Unsupported signup_type", code: 400 }`）
+      - `signup_type_id` の欠落・空文字（`{ message: "User data missing", code: 400 }`）
+      - `referral_code` の形式不正、または御社が発行したコードでない
+        （`{ message: "referral_code is unknown or disabled", code: 400 }`）
+    - 409: その `signup_type_id` が**御社の外**で既に使われている
+      （`{ message: "This signup_type_id is already registered outside your account", code: 409 }`）。
+      本文は `message` と `code` だけで、`userId` も氏名も返しません。**再送しても変わりません**
+
+    ### GET /users?id=<userId>
+    ユーザー情報を取得（テナント分離。自社ユーザーのみ）。
+    - 200: `{ data: { id, first_name, last_name, email, phone_number, telegram_id, client_id, created_at, updated_at, signup_type_id, signup_type, card_issued, kyc_verified }, code: 0 }`
+      — 返るのは**この 13 項目ちょうど**です（Pay3 内部の識別子は含みません）
+
+    ## KYC
+
+    ### POST /kyc/access-token
+    Sumsub のアクセストークンを発行。御社UIで本人確認フローを起動するために使う。
+    - body: `{ userId }`
+    - 200: `{ data: { accessToken, userId }, code: 0 }`
+
+    ### POST /kyc/submit
+    本人確認完了後に呼び、口座/カード基盤のセットアップを起動する。**冪等**（**Idempotency-Key** 推奨）。
+    - headers: `Idempotency-Key: <unique>`
+    - body: `{ userId, applicantId }`
+    - 200: `{ data: { applicantId }, code: 0 }`
+
+    ## Card
+
+    ### POST /card/application/start
+    カード申込を開始。
+    - body: `{ userId }`
+
+    ### POST /card/application
+    カード申込の状態を取得。
+    - body: `{ userId }`
+
+    ### POST /card/quote
+    発行前の見積もり。**金銭は動かない**（純粋な参照）。
+    - body: `{ userId, type?, bin?, country? }`
+      - `type`（任意, 既定 `"physical"`）: `"virtual"` | `"physical"`。**virtual を見積もるときは必ず指定する**
+      - `bin`（任意）: 下記「カード BIN の値域」。省略時はその種別を出せる先頭 BIN
+      - `country`（任意）: 送り先。`physical` のとき標準配送を超える分の目安を返す
+    - 200: `{ data: { bin, form_factor, country, currency, price, estimated_shipping, total }, code: 0 }`
+      - `total` が発行時に実際に請求される確定価格
+      - **`price` / `total` / `estimated_shipping` は小数 2 桁固定の文字列**（`"5.00"`。他の金額フィールドと同じ表記）
+      - `estimated_shipping` は該当しないとき（virtual、または `country` 未指定）`null`。**`null` は「無料」ではなく「対象外」**
+      - 実例: `{ "bin": "45492418", "form_factor": "virtual", "country": null, "currency": "USD", "price": "5.00", "estimated_shipping": null, "total": "5.00" }`
+    - 400: 未対応の `bin` / `type` の組み合わせ（`{ message: "Unsupported card bin/form factor: <bin>/<form factor>", code: 400 }`）
+
+    ### POST /card/issue_card
+    カードを発行。**冪等**（**Idempotency-Key** 必須推奨）。KYC 完了が前提。
+    - headers: `Idempotency-Key: <unique>`
+    - body: `{ userId, type, amount?, bin? }`
+      - `type`: `"virtual"` | `"physical"`
+      - `amount`（任意, 既定 0）: 発行と同時にユーザー残高へ載せる入金額。**発行価格そのものではない**（価格は Pay3 側で一元管理）。
+      - `bin`（任意）: 発行する BIN。**省略時はその種別を出せる先頭 BIN**（サンドボックスの virtual では `537100`）。
+    - 200: `{ data: { id, cardType, status, last4 }, code: 0 }`
+      - `id`: カード ID。`card.issued` Webhook の `cardId` と同じ値
+      - `cardType`: `"virtual"` | `"physical"` / `status`: `"active"` | `"issued"` | `"shipped"` | `"activated"` | `"frozen"`
+      - `last4`: カード番号の下 4 桁。**PAN・CVV・有効期限・請求先住所・メールアドレスは返しません**
+      - **返す項目はこの 4 つだけです**（カード基盤の生レスポンスは中継しません）。項目の追加ご要望はお知らせください
+    - 400: カタログに無い / 無効 / その種別を許可していない `bin`。**ユーザー残高が発行価格に満たない場合もこの 400**（下の「残高が足りないときは 400 と 402 の 2 系統があります」）
+    - 402: **発行の途中で徴収が尽きた**（作成済みカードは Pay3 が閉じます。同上）
+    - 403: **2 系統あります。`message` で識別してください**（どちらも `code: 403`）
+      | message | 意味 | 対処 |
+      |---|---|---|
+      | `This card is not available for your account` | その口座に許可されていない `bin` | 許可された `bin`（上表）を指定する |
+      | `Card limit reached for your account` / `Card limit reached for this card type` | **発行枚数の上限**に達している | 既存カードを確認する。枚数を増やす必要があれば Pay3 へご連絡ください |
+
+      > **枚数上限について**: 既定は 1 ユーザーあたり virtual 1 枚・physical 1 枚ですが、これは
+      > **Pay3 側の安全弁としての既定値であり、設定により変わりえます**（貴社ごとの変更も可能です）。
+      > 貴社実装では**枚数をハードコードせず**、403 の `message` で分岐してください。
+      > `bin` を差し替えても枚数上限は解消しません（原因が別のため）。
+    - 409: **カードが作られないまま発行処理が終わった**
+      （`{ message: "Card issuance did not complete: no card was created. ...", code: 409 }`）。
+      ほとんどの場合、**口座/カード基盤のセットアップがまだ終わっていない**のが原因です
+      （`kyc/submit` はセットアップを**起動**する非同期処理なので、完了を待たずに発行を叩くとこの窓に入ります）。
+      **カードは 1 枚も作られておらず、`card.issued` Webhook も送られません。**
+      `GET /users/{userId}` の `kycStatus` / `cards` か `user.kyc.updated` Webhook でセットアップ完了を確認し、
+      **新しい `Idempotency-Key` で再実行**してください。繰り返し 409 になる場合は Pay3 へご連絡ください
+
+    #### 残高が足りないときは 400 と 402 の 2 系統があります
+
+    **どちらもカードは残りません**が、**止まった場所が違います**。`status`（＋ `code`）で分岐してください。
+
+    | status | 意味 | 何が起きたか | レスポンス本文 |
+    |---|---|---|---|
+    | **400** | **残高が発行価格に満たない（事前拒否）** | 発行を**始める前**に Pay3 が断りました。**カードは作られていません** | `{ "message": "Not enough balance to issue card", "code": 400 }` |
+    | **402** | **発行の途中で徴収が尽きた** | カードは一度作られましたが価格を引けず、**Pay3 がそのカードを閉じました（void 済み）**。`card_issued` も false のままです | `{ "message": "Not enough balance to issue card. The issuance was rolled back and no card was created.", "code": 402 }` |
+
+    - 対処はどちらも同じです: **チャージしてから、新しい `Idempotency-Key` で再実行**してください
+      （同じキーで再送すると初回のレスポンスがそのまま再生されます → **idempotency.md**）
+    - **貴社実装では必要額をハードコードせず、`status` / `code` で分岐してください** — 発行時に
+      実際に控除される金額は Pay3 側の設定で変わりえます（サンドボックスと本番でも異なります）。
+      `if (status === 402)` だけを見ると、最も素直な「残高が足りない」ケース（**400**）を取りこぼします
+
+    ### カード BIN の値域
+
+    `bin` の値域は Pay3 側のカード BIN カタログで決まり、**カタログに無い値は発行・見積もりとも拒否される**（フェイルクローズ）。
+    サンドボックス（dev）で有効な値:
+
+    | BIN | ブランド / 名称 | 発行できる種別 |
+    |---|---|---|
+    | `537100` | Mastercard / Virtual Card | virtual（`bin` 省略時の既定） |
+    | `45492418` | Visa / Pay3 Card | virtual |
+    | `49387519` | Visa / White Card | physical |
+
+    BIN ごとに出せる種別が違うため、**`bin` と `type` の組み合わせ**がカタログで許可されていない場合は 400（500 ではない）。
+    本番の値域は引き渡し時に別途案内する。
+
+    ### POST /card/issuance_events
+    発行進捗イベントを取得（ローディングUI / 状態同期用）。
+    - body: `{ userId, applicationId?, since? }`（`since` は ISO timestamp）
+    - 200: `{ data: { events: [{ phase, meta, created_at, application_id }] }, code: 0 }`
+    - `phase`: `validating → provider_call → db_committed → card_fetched → funds_settled → shipping_requested → done`（失敗時 `failed`）
+
+    ### POST /card/fetch_cards
+    ユーザーのカード一覧。
+    - body: `{ userId }`
+    - 200: `{ data: [{ id, cardType, status, last4, currency, balance }], code: 0 }`
+      - `balance` は**小数 2 桁固定の文字列**（`"2.60"`。他の金額フィールドと同じ表記）。
+        取得できなかった場合は `null`（`"0.00"` には丸めません — 残高 0 と区別するため）
+      - `currency` は ISO 通貨コード（例 `"USD"`）。`last4` はカード番号の下 4 桁
+      - **返す項目はこの 6 つだけです**。カード基盤の内部識別子（口座 ID・budget ID・cardholder ID 等）、
+        請求先住所、メールアドレス、価格表・機能フラグは含みません
+      - ⚠️ **スコープはカード基盤側の口座で決まります。** sandbox ではテスト用口座を複数のテストユーザーで
+        共有しているため、**他のテストユーザーのカードが混ざって返ることがあります**
+        （2026-09-16 実測: 同じ口座を共有する 2 ユーザーで叩くと、どちらも同一の 2 枚を返した）。
+        **本番では各ユーザーが自分の口座を持つので発生しません。**
+        本人のカードだけを見たい場合は `GET /users/{userId}` の `cards` を使ってください
+        （こちらは本人スコープです）
+
+    ### POST /card/fetch_card_details
+    - body: `{ userId, cardId }`
+    - ⚠️ **この面は 2 要素の追加認証（step-up）が必須**で、パートナー OAuth で発行した
+      トークンはそれを持たないため **`401`** が返ります
+    - **カード番号・CVV・有効期限はパートナー境界を越えません。** 200 の `data` は空です。
+      カードの種別・状態・下 4 桁は `POST /card/fetch_cards` か `GET /users/{userId}` を使ってください
+
+    ### POST /card/fetch_deposit_address
+    暗号資産の入金アドレスを取得。
+    - body: `{ userId, token, network }`
+
+    ### POST /card/set_card_pin
+    ATM PIN を設定。
+    - body: `{ userId, cardId, pin }`
+
+    ### POST /card/lock_card  /  unlock_card
+    カードのロック/解除。
+    - body: `{ userId, cardId }`
+
+    ### POST /card/fetch_transactions
+    取引履歴。
+    - body: `{ userId, page, limit }`
+
+    ## Partner Pool
+
+    プール入金を原資にユーザー残高へチャージする経路（残高照会・チャージ指示・台帳）。
+    → ****pool.md****
+
+    - `GET /pool/balance` / `GET /pool/deposit_address`
+    - `POST /pool/transfer`（`Idempotency-Key` 必須）
+    - `GET /pool/transfer/{transferId}` / `GET /pool/transfers`（`status` / `userId` / `from` / `to` / `limit` / `offset`）
+    - `GET /pool/ledger`（`type` / `from` / `to` / `limit` / `offset`）
+
+    一覧系 GET（`/pool/transfers`・`/pool/ledger`・`/users/list`・`GET /referral-codes`）は
+    **受け付ける引数名が決まっており、それ以外は 400** です（綴り違いを「絞り込めていない全件
+    200」で返さないため）。一覧 → **pool.md の「クエリ引数の検証」**。
+
+    `from` / `to` は `createdAt` 基準です。**日付のみの指定は UTC 基準で、`to` はその日を
+    丸ごと含みます** — 1 日ぶんは `?from=2026-09-15&to=2026-09-15` で取れます
+    （→ **pool.md の「日付の指定」**）。
+
+    ## Referral Codes
+
+    紹介コードの登録・有効化切替・削除と、ユーザーへの紐付け。
+    → ****referral-codes.md****
+
+    - `GET /referral-codes` / `POST /referral-codes`
+    - `PATCH /referral-codes/{code}` / `DELETE /referral-codes/{code}`
+
+    `POST /users/register` は `referral_code` を受け付けます。
+
+    ## User Status
+
+    自社ユーザーの一覧と、KYC 完了状況・カード発行ステータス（仕様書 §8・§10-3）。
+    → ****users.md****
+
+    - `GET /users/list`（スコープ `users:status`。引数は `limit` 1〜200 / `offset` のみ）
+    - `GET /users/{userId}`（スコープ `users:status`。帰属外・不存在はいずれも 404）
+
+    一覧・照会・`POST /pool/transfer` の対象になるユーザーの集合は**同一**です。
+
+    `GET /users/list` が返す `referralCode` と、Webhook `user.registered` の `partnerRefCode` は
+    **同じ値**（そのユーザーの登録時に確定した貴社の紹介コード）です。名前が二形あるのは経路ごとの
+    綴りの違いで、突き合わせは値でそのまま行えます。
+
+    ## Developer（自社の資格情報・Webhook 設定）
+
+    コンソール「開発者」メニューの API 面です。**操作できるのは呼び出したトークンの client 自身の設定だけ**です
+    （スコープ `client:manage`。鍵を替えられる権限なので、permissions 未設定でも通しません）。
+
+    - `GET /developer` — 要約 `{ clientName, clientId, apiKeys: [...], webhook: { url, hasSecret, description, events, availableEvents, registeredAt }, ipAllowlist: [...], ipAllowlistRequired, docsUrl }`。鍵は**マスク表示のみ**。`events` が `null` = 全イベントを購読
+    - `GET /developer/api-keys` — キー一覧 `{ data: [{ id, name, masked, status, createdAt, lastUsedAt, revokedAt, legacy }] }`（`status` は `active` / `revoked`）
+    - `POST /developer/api-keys` — `{ "name": "本番連携" }` で新しいキーを発行。**この応答でだけ** `key`（`pay3_sk_…`）を返します。有効なキーは同時に 10 本まで（超えると 409）。複数のキーを持ち、御社のタイミングで切り替えてください
+    - `PATCH /developer/api-keys/{id}` — `{ "name": "..." }` で名前を変更（1〜64 文字。ラベルは御社が自由に付けられます）
+    - `DELETE /developer/api-keys/{id}` — キーを取り消し（即時・不可逆）。2026-09-18 より前に発行した初期キーは `id = "legacy"` で取り消せます
+    - `PUT /developer/webhook` — `{ "url": "https://…", "description"?: "本番の受信サーバー", "events"?: ["card.issued", …] }` で宛先を登録・変更（`url: null` で解除。説明・購読も消えます）。https の絶対 URL のみ（localhost・資格情報入りは 400）。`events` は **webhooks.md** の語彙から 1 つ以上（省略 = 全部。空配列は 400）。`description` は 120 文字まで。署名鍵が未発行なら発行し、応答の `secretIssued` に返します
+    - `GET /developer/webhook/secret` — 署名鍵を表示 `{ webhookSecret }`（未発行なら 409）。呼び出しは監査ログに残ります
+    - `POST /developer/webhook/secret` — 署名鍵を再発行 `{ webhookSecret }`。旧鍵は即時失効します
+    - `POST /developer/webhook/test` — `ping` イベントを 1 通配信します（宛先未登録なら 409）。到達は配信ログで確認します
+    - `PUT /developer/ip-allowlist` — `{ "entries": ["203.0.113.10", "198.51.100.0/24"] }` で御社から Pay3 API を呼ぶ**送信元 IP のホワイトリスト**を設定（IPv4 / IPv6 / CIDR、最大 20 件）。**登録した IP からの呼び出しだけを受け付けます。** `ipAllowlistRequired` が `true` のクライアント（御社を含む新規のクライアント）は、**1 件も登録していない間は API キー経由の呼び出しが 403 `ip_not_registered`** になります。登録外の IP からは 403 `ip_not_allowed`。コンソールの操作はどちらの対象にもならないので、登録・修正は常にコンソールから行えます
+    - `GET /developer/webhook/deliveries?limit=` — 配信ログ（新しい順、1〜100、既定 20）。各行は `{ id, eventType, status, attempts, maxAttempts, lastStatusCode, lastError, payload, createdAt, deliveredAt, nextAttemptAt }`。`status` の語彙は **webhooks.md** のとおり
+
+    秘密値（API 鍵・署名鍵）が平文で返るのは「発行した瞬間の 1 回」だけです。控えを失った場合は再発行してください。
+
+    ## 未知のパス
+
+    認識できないパス・未対応の HTTP メソッドは **JSON の 404** を返します。
+    この約束が掛かる範囲は **`/pool/*`・`/referral-codes*`・`/users/*`・`/oauth/*`** です。
+
+    > **仕様書 §3 との差分（正直に書きます）**: 仕様書 §3 は「認識できないパス・未対応メソッドは
+    > JSON の 404」を**全面的に**約束していますが、**この形で 404 が確実に返るのは上記 4 サブツリー**です。
+    > `/kyc/*`・`/card/*` は**ボディの `userId` を分岐より先に解決する**構造のため、未知サブパス・
+    > 未対応メソッドに対して返るものが送ったボディで変わります（2026-09-16 実測）:
+    >
+    > | 送ったボディ | `/card/<未知>`・`/kyc/<未知>` の応答 |
+    > |---|---|
+    > | 正しい JSON ＋ 御社に帰属する `userId` | `404 {"message":"Unknown endpoint. …","code":404}`（仕様書どおり） |
+    > | 正しい JSON ＋ 不明な `userId` | `404 {"message":"User not found","code":-1}`（`code` が HTTP ステータスと一致しません） |
+    > | 正しい JSON ＋ `userId` なし | `400 {"message":"User ID is required","code":400}` |
+    > | **JSON として読めない・ボディなし** | `400 {"message":"Invalid JSON body","code":400}` |
+    >
+    > つまりこの 2 サブツリーでは「パスの綴り違い」が**パスの誤りとして返ってこないことがあります**。
+    > **パスの綴りは docs の逐語どおりに**お使いください。分岐をボディの読み取りより前へ出す
+    > 修正は引き渡し後に入れます。
+    >
+    > **一方、ボディが JSON として読めないときの出口は全サブツリーで揃っています。**
+    > `/kyc/*`・`/card/*` でも、壊れた JSON・空ボディ・JSON オブジェクトでない本文
+    > （`null` / 文字列 / 数値 / 配列）は **`400 {"message":"Invalid JSON body","code":400}`** です。
+    > **`text/plain` の `500` は返りません** — 「入力の誤りが `500` になることはありません」
+    > （**authentication.md**）はこの 2 サブツリーでも守られています。
+
+    → **pool.md の「未知のパス・エラー本文の形式」**
+
+    ---
+    正規の機械可読仕様は [openapi.yaml](openapi.yaml) を参照。
+    環境ごとの接続先は **environments.md**、コピペで通る最短手順は **quickstart.md**。
+
+    ---
+
+    # Users（ユーザーステータス照会）
+
+    御社の紹介コード経由で登録したユーザーの KYC 完了状況・カード発行ステータスを返します
+    （仕様書 §8）。
+
+    すべて `Authorization: Bearer <accessToken>` が必要です。
+    Base URL (sandbox): `https://api-staging.pay-3.io/functions/v1/external-service`
+
+    > **ベース URL は末尾の `/external-service` まで含みます**（仕様書 §2 と同じ定義です）。
+    > 以下の見出しのパスはすべてそのベース URL の直下です
+    > （例: `GET {BASE_URL}/users/{userId}`）。同じ注記が **pool.md** の冒頭にあります。
+
+    ## 必要なスコープ
+
+    | スコープ | 範囲 |
+    |---|---|
+    | `users:status` | `GET /users/list` と `GET /users/{userId}`（`users:read` を持っていれば自動的に満たします） |
+
+    > これらのエンドポイントは **permissions を明示的に設定したクライアントだけ**が呼べます。
+    > permissions が未設定のクライアントは（他の一部エンドポイントと違い）素通りせず `403` です。
+
+    ## 見える範囲
+
+    **御社に属しているユーザーだけ**が見えます。次のどちらかを満たすユーザーです。
+
+    1. 紹介コード付きの登録リンク経由で登録したユーザー（= `user.registered` Webhook が
+       届いたユーザー。§7）。帰属は**登録時点で確定**し、あとからコードを無効化・削除しても
+       変わりません
+    2. `POST /users/register` で御社が作成したユーザー
+
+    この集合は `GET /users/list`・`GET /users/{userId}`・`POST /pool/transfer`
+    （**pool.md**）で**完全に同一**です。一覧に出たユーザーは必ず照会でき、必ずチャージ
+    指示を出せます（KYC 等の条件は別途かかります）。
+
+    属していない userId・他社のユーザー・存在しない userId は**すべて `404`** を返します
+    （`403` は返しません。存在するかどうかを含めてお返ししない方針のためです）。
+
+    ## GET /users/list
+
+    御社に属しているユーザーの一覧です（仕様書 §10-3「登録ユーザー一覧」の API 面）。
+
+    ```bash
+    curl -s "$BASE_URL/users/list?limit=50&offset=0" \
+      -H "Authorization: Bearer $ACCESS_TOKEN"
+    ```
+
+    - 200:
+      ```json
+      {
+        "data": [
+          {
+            "userId": "5c3ff529-0000-4000-8000-000000000000",
+            "registeredAt": "2026-09-14T10:11:12.000Z",
+            "referralCode": "PARTNER-A",
+            "kycStatus": "approved",
+            "kyc": { "identity": { "status": "approved" }, "cardIssuer": { "status": "approved" } },
+            "cardStatus": "issued"
+          }
+        ],
+        "paging": { "limit": 50, "offset": 0, "total": 1 }
+      }
+      ```
+    - 該当ユーザーが 0 人のときは `{"data": [], "paging": {"limit":50,"offset":0,"total":0}}`
+      （`404` にはなりません。「読めない」ではなく「0 件」です）
+    - 400: `limit` / `offset` が不正、または**受け付けない引数名**（下記の値域を参照）
+    - 403: 必要スコープがありません
+
+    | フィールド | 意味 |
+    |---|---|
+    | `userId` | Pay3 のユーザー ID（現行サンドボックスでは UUID 形式） |
+    | `registeredAt` | 登録日時（ISO 8601・UTC） |
+    | `referralCode` | 登録時に確定した紹介コード。`POST /users/register` 経由で紹介コードが無いユーザーは `null` |
+    | `kycStatus` | 総合。`GET /users/{userId}` と**同じ語彙・同じ判定**（下記 **kycStatus と kyc**） |
+    | `kyc` | 段ごとの状態 `{ identity: { status }, cardIssuer: { status } }`（同上） |
+    | `cardStatus` | カード発行状況の要約。`issued`（発行済み）/ `not_issued`（未発行） |
+
+    > **`cardStatus` は要約です。** カードの枚数・種別（virtual/physical）・`frozen` などの
+    > 実状況は `GET /users/{userId}` の `cards` でお取りください。一覧はユーザー数に比例した
+    > カード照会を行わない設計のため（一覧の表示がカード基盤の状態に引きずられないように
+    > するためです）、DB 上の発行フラグだけを返します。
+
+    ### ページング
+
+    | パラメータ | 既定値 | 値域 | 不正なとき |
+    |---|---|---|---|
+    | `limit` | `50` | 1〜200 の十進整数 | `400`（黙って丸めません） |
+    | `offset` | `0` | 0 以上の十進整数 | `400`。**総件数を超える `offset` は `200` の空ページ**（`"data": []`・`"total"` は総件数） |
+
+    - 並び順は**登録日時の新しい順**で固定です（同時刻は `userId` 順）。並びが固定なので
+      `offset` を進めても行の取りこぼし・重複は起きません。
+    - `paging.total` は御社に属するユーザーの総数です（`limit` で切る前の件数）。
+
+    ### 全ページを取る
+
+    `paging.total` を上限に `offset` を `limit` ずつ進めます。`/pool/ledger`・`/pool/transfers` も
+    同じ `paging` の形なので、同じ書き方がそのまま使えます。
+
+    ```bash
+    LIMIT=200
+    OFFSET=0
+    while : ; do
+      PAGE=$(curl -s "$BASE_URL/users/list?limit=$LIMIT&offset=$OFFSET" \
+        -H "Authorization: Bearer $ACCESS_TOKEN")
+      echo "$PAGE" | jq -c '.data[]'
+      TOTAL=$(echo "$PAGE" | jq '.paging.total')
+      OFFSET=$((OFFSET + LIMIT))
+      [ "$OFFSET" -ge "$TOTAL" ] && break
+    done
+    ```
+
+    - 終了条件は **`offset >= paging.total`** です。`data` が空になるまで回しても構いません
+      （総件数を超えた `offset` は `404` ではなく **`200` の空ページ**を返します）。
+    - 巡回中に新しいユーザーが登録されると、並びが**新しい順**であるため後ろのページが 1 行ずつ
+      ずれます。厳密な一巡が必要な場合は、**先頭から前回同期済みのユーザーに到達するまで辿る**
+      差分同期（仕様書 §8.2）をお使いください。
+    - **受け付ける引数は `limit` / `offset` の 2 つだけ**です。それ以外の引数名（`?userid=`
+      のような綴り違いを含む）を付けると `400` になり、本文に受け付ける引数名が列挙されます。
+      引数名は大文字小文字を区別します。知らない引数を黙って捨てて全件を返すことはしません
+      （詳細は **pool.md の「クエリ引数の検証」**）。
+    - 絞り込み（紹介コード別など）・ソート指定・CSV 出力は現時点では提供していません。
+      必要でしたらお知らせください。
+
+    ## GET /users/{userId}
+
+    - `userId` は `user.registered` Webhook（§6.2）でお渡しする Pay3 のユーザー ID です。
+      現行サンドボックスでは UUID 形式です。
+
+    ```bash
+    curl -s "$BASE_URL/users/$USER_ID" \
+      -H "Authorization: Bearer $ACCESS_TOKEN"
+    ```
+
+    - 200:
+      ```json
+      {
+        "userId": "P123456",
+        "kycStatus": "approved",
+        "kyc": { "identity": { "status": "approved" }, "cardIssuer": { "status": "approved" } },
+        "cards": [
+          { "cardType": "virtual", "status": "active" },
+          { "cardType": "physical", "status": "shipped" }
+        ]
+      }
+      ```
+      - カードが 1 枚も無いユーザーは `"cards": []`（`null` にはなりません）。
+      - **カード番号・CVV・BIN・請求先住所・氏名・メールアドレス等は含めません**（仕様書 §8）。
+        項目の追加ご要望（残高等）があればお知らせください。
+    - 403: 必要スコープがありません
+    - 404: 御社に帰属していない / 存在しない userId
+    - 502: カード発行状況を一時的に取得できませんでした（カード 0 枚とは区別します。再試行してください）
+
+    ### kycStatus と kyc（段ごとの状態）
+
+    Pay3 の本人確認は **2 段**あります。Sumsub による一次本人確認（`identity`）と、
+    その後に行われる**カード発行体の審査**（`cardIssuer`）です。一次が承認されても、
+    発行体の審査が終わるまでカードの発行・チャージ指示はできません。
+
+    - `kycStatus` … **総合**。`approved` は「チャージ指示・カード発行が通る状態」と同義です
+    - `kyc.identity.status` … 一次本人確認（Sumsub）
+    - `kyc.cardIssuer.status` … カード発行体の審査
+
+    ```json
+    {
+      "kycStatus": "pending",
+      "kyc": {
+        "identity":   { "status": "approved" },
+        "cardIssuer": { "status": "pending" }
+      }
+    }
+    ```
+
+    | `kyc.identity.status` | 意味 |
+    |---|---|
+    | `not_submitted` | 一次本人確認が未実施（登録直後の状態） |
+    | `pending` | 書類提出済み・審査中 |
+    | `approved` | 一次本人確認は承認済み（**まだカードは発行できません**。発行体の審査へ自動で進みます） |
+    | `rejected` | 否認。再提出すると `pending` に戻ります |
+
+    | `kyc.cardIssuer.status` | 意味 |
+    |---|---|
+    | `not_started` | 一次本人確認が終わっていないため、発行体の審査は始まっていません |
+    | `pending` | 発行体が審査中（通常は数分。長い場合があります） |
+    | `approved` | 発行体の審査を通過し、カード発行・チャージができる状態 |
+    | `rejected` | 発行体が否認 |
+
+    総合 `kycStatus` は次のように決まります。
+
+    | `identity` | `cardIssuer` | `kycStatus` |
+    |---|---|---|
+    | `approved` 以外 | （問わない） | `identity` と同じ値 |
+    | `approved` | `approved` | `approved` |
+    | `approved` | `rejected` | `rejected` |
+    | `approved` | それ以外 | `pending` |
+
+    > **`approved` は「チャージ指示が通る状態」と同義**です。`POST /pool/transfer` が
+    > `412` を返す条件（KYC 未完了）と同じ判定なので、`approved` なのに `412` になることはありません。
+    > 一次が承認された時点では `kycStatus` は `pending` のままで、発行体の審査が通ると
+    > `approved` になります。その変化は **`user.kyc.updated`** Webhook で通知します
+    > （`stage` で「どの段が変わったか」が分かります）。
+
+    ### cards
+
+    | cardType | status | 意味 |
+    |---|---|---|
+    | `virtual` | `active` | 発行完了・即時利用可能 |
+    | `virtual` | `issued` | 発行手続き中（まだ利用できません） |
+    | `physical` | `issued` | 発行手続き完了・発送準備中 |
+    | `physical` | `shipped` | 発送済み（お手元に届くまで利用不可） |
+    | `physical` | `activated` | アクティブ化済み・利用可能 |
+    | 共通 | `frozen` | 一時停止中（ユーザー操作またはサポート対応） |
+
+    - `frozen` は種別より優先して返します（アクティブ化済みのリアルカードがロックされている場合も `frozen`）。
+    - 解約・無効化されたカードは一覧に含めません。
+
+    ## 既存の `GET /users?id=` について
+
+    Pay3 の内部向けに `GET /users?id=<uuid>` という別のエンドポイントが
+    以前から存在しますが、**こちらは本仕様書の §8 とは別物**です（レスポンス形が異なります）。
+    御社の連携では `GET /users/{userId}` をお使いください。
+
+    ---
+
+    # Partner Pool（プール台帳・チャージ指示）
+
+    御社が事前に USDT で入金した残高（プール）を原資に、御社の指示で Pay3 ユーザーの
+    カード残高へチャージする経路です。
+
+    すべて `Authorization: Bearer <accessToken>` が必要です。
+    Base URL (sandbox): `https://api-staging.pay-3.io/functions/v1/external-service`
+
+    > **ベース URL は末尾の `/external-service` まで含みます**（仕様書 §2 と同じ定義です）。
+    > API のパスはすべてそのベース URL の直下に置いてください（例: `GET {BASE_URL}/pool/balance`）。
+    > `/external-service` を落とした `…/functions/v1/pool/balance` は
+    > 「pool という関数が無い」という 404 になり、二重に付けた
+    > `…/external-service/external-service/pool/balance` も通りません。
+    > **展開後の URL に `/external-service` がちょうど 1 回**現れるのが正しい形です。
+
+    ## 必要なスコープ
+
+    | スコープ | 範囲 |
+    |---|---|
+    | `pool:read` | 残高・台帳・指示の照会 |
+    | `pool:transfer` | チャージ指示の作成（`pool:read` を含む） |
+
+    スコープ不足は `403 Insufficient scope: <scope> required` を返します。
+
+    ## 送信元 IP（ホワイトリスト）
+
+    API キーで取得したトークンでの呼び出しは、**コンソール「開発者 → 送信元 IP」（または `PUT /developer/ip-allowlist`）に
+    登録した IP からのみ**受け付けます。sandbox / 本番とも同じです。
+
+    - 1 件も登録していない間は、どのエンドポイントも `403 ip_not_registered` です（コンソールの操作は対象外なので、
+      登録・修正はいつでもコンソールから行えます）。
+    - 登録外の IP からの呼び出しは `403 ip_not_allowed` です。
+    - 送信元は Cloudflare が付与する `cf-connecting-ip` で判定します。
+      `x-forwarded-for` / `x-real-ip` は**リクエスト側が自由に付けられるため参照しません**。
+    - IPv4 / IPv6 / CIDR、最大 20 件。
+
+    ---
+
+    ## 資金の流れ
+
+    ```
+    御社 → USDT をプール入金アドレスへ送金
+         → Pay3 が着金を確認し、0.5% を控除して USD でプール残高に反映
+         → 御社が POST /pool/transfer で「このユーザーに $X」と指示
+         → プール残高から差引き、ユーザーのカード残高へ反映
+    ```
+
+    - 入金時の控除率は `GET /pool/deposit_address` の `feeRate` で確認できます（既定 0.5%）。
+    - **金額の上限・下限チェックは御社側の責務**です。Pay3 は指示された金額をそのまま USD でチャージします。
+    - ADUSD / ROY の区別は行いません。同一の枠組みで扱います。
+
+    ---
+
+    ## GET /pool/balance
+
+    > **`?currency=USD` を付けられます（任意）。** 現在プールは 1 社 1 通貨なので、付けても
+    > 付けなくても返る値は同じです。将来プールが複数通貨になったときに御社のコードを
+    > 変えずに済むよう、**今のうちに付けておくことをお勧めします**。
+    > 3 文字の通貨コード以外は `400`、プールの通貨と違う指定は `404`（未開設と同じ応答）です。
+
+
+    プール残高。補充判断に使ってください。
+
+    - 200:
+      ```json
+      {
+        "balance": "9950.00",
+        "pendingTransfers": "300.00",
+        "available": "9650.00",
+        "currency": "USD"
+      }
+      ```
+    - `available` … いますぐチャージ指示に使える額
+    - `pendingTransfers` … 受理済みで反映確定待ちの拘束分
+    - `balance` … 上記の合計
+    - 404: プール口座が未開設
+    - 400: クエリ引数を付けた場合（このエンドポイントは**引数を取りません**。常に現在の残高を返します）
+      ```bash
+      $ curl -s "$BASE_URL/pool/balance?to=2026-09-15" -H "Authorization: Bearer $TOKEN"
+      {"message":"Unknown query parameter \"to\". Accepted: (none)","code":400}
+      ```
+      過去の時点の残高は `GET /pool/ledger` の `balanceAfter`（走行残高）で辿ってください。
+
+    ## GET /pool/deposit_address
+
+    プール入金用のアドレス。**何を送るかは `currency`、どのチェーンかは `network`** で返します
+    （どちらも口座ごとの設定です。本番は USDT / TRON、サンドボックスは USDC / Ethereum Sepolia）。
+
+    - 200: `{ "address": "T...", "network": "TRON", "currency": "USDT", "feeRate": "0.0050" }`
+    - **`currency` と `network` の組をそのまま使ってください。** 表示された通貨以外を送ると着金しません
+      （別のトークンを同じアドレスへ送った場合、Pay3 からは検知も返金もできません）。
+    - 409: アドレス未発行（この場合は送金しないでください）
+    - 400: クエリ引数を付けた場合（このエンドポイントは**引数を取りません**。常に登録済みの 1 本を返します）
+      ```bash
+      $ curl -s "$BASE_URL/pool/deposit_address?to=2026-09-15" -H "Authorization: Bearer $TOKEN"
+      {"message":"Unknown query parameter \"to\". Accepted: (none)","code":400}
+      ```
+      `?network=TRON` のように絞り込んだつもりの引数を付けても、返るのは常に登録済みのアドレスです。
+      黙って捨てると「TRON のアドレスを確認した」と読めてしまうため、`400` で明示的に返します。
+
+    > **サンドボックス（dev）の注意**: サンドボックスの入金レールは **USDC / Ethereum Sepolia**（テストネット）です。
+    > 返る `currency` は `USDC`、`network` は `ETH_SEPOLIA`（メインネットの `ETH` と取り違えないよう明示しています）。
+    > テストネット USDC は Circle の faucet などで入手できます。**本番のレール（USDT / TRON）とは別物**なので、
+    > サンドボックスで確認できるのは配管（アドレス取得 → 着金 → 台帳反映 → Webhook）であり、
+    > 本番レール固有の挙動は本番前に別途確認します。
+    >
+    > `network` が `SANDBOX`・`address` が `0xSANDBOX_` で始まる場合は、**まだ実アドレスが発行されていない**
+    > プレースホルダです（**送金しないでください**）。
+
+    ## POST /pool/transfer
+
+    チャージ指示。**`Idempotency-Key` ヘッダは必須**です。
+
+    - headers: `Idempotency-Key: <unique>`
+    - body: `{ "userId": "<uuid>", "amount": "300.00" }`
+      - `amount` は小数 2 桁までの文字列。`"300.00"` のように送ってください。
+    - 202: `{ "transferId": "pt_...", "status": "pending" }`
+
+    反映完了は同期では返りません。`pool.transfer.completed` / `pool.transfer.failed`
+    Webhook（**webhooks.md**）、または `GET /pool/transfer/{transferId}` で確認します。
+
+    ### 対象にできるユーザー
+
+    チャージを打てるのは**御社に属するユーザー**だけです。属するとは、次のどちらかを満たすことです:
+
+    1. **紹介コード経由で登録したユーザー** — 御社の紹介コード付き登録リンク
+       （**referral-codes.md**）からサインアップしたユーザー。帰属は
+       **登録時点で確定し、以後変わりません**（コードを無効化・削除しても過去の帰属は維持されます）。
+    2. **`POST /users/register` で御社が作成したユーザー**。
+
+    この集合は `GET /users/{userId}`（**users.md**）で照会できる集合と**同一**です
+    （照会できるユーザーにはチャージでき、チャージできるユーザーは照会できます）。
+    これ以外の userId — 他社のユーザー・どこにも属さないユーザー・存在しない userId — は
+    **区別せずすべて 404** です（他社ユーザーの実在を推測できないようにするため）。
+
+    ### エラー
+
+    | ステータス | 意味 |
+    |---|---|
+    | 400 | `Idempotency-Key` 未指定 / `userId` 欠落 / `amount` の形式不正 |
+    | 402 | プール残高不足 |
+    | 404 | ユーザーが見つからない（他社のユーザーは存在しても 404） |
+    | 409 | 同一キーで**異なるボディ**が送られた / 同一キーの処理が進行中 |
+    | 412 | ユーザーの KYC が未承認 |
+    | 429 | レート制限超過 |
+    | 503 | この環境ではチャージ指示が未設定（下記「決済モード」参照） |
+
+    受理拒否（402 / 404 / 412 / 409 `pool_not_found`）も理由付きで記録され、
+    `GET /pool/transfers` とコンソールから確認できます。拒否が無言で消えることはありません。
+
+    **拒否のレスポンスにも `transferId` が入ります。** 記録された拒否行の ID なので、
+    そのまま `GET /pool/transfer/{transferId}` で理由まで引けます（時刻で突き合わせる必要は
+    ありません）。御社側の指示 ID と Pay3 の `transferId` を 1:1 で記録できます。
+
+    ```json
+    // 412（KYC 未承認）
+    { "message": "User KYC is not approved", "code": 412, "transferId": "pt_9f0c..." }
+    // 402（残高不足）
+    { "message": "Insufficient pool balance", "code": 402, "transferId": "pt_1a7d..." }
+    ```
+
+    ```bash
+    curl -s "$BASE_URL/pool/transfer/pt_9f0c..." -H "Authorization: Bearer $TOKEN"
+    # => 200 { "transferId": "pt_9f0c...", "status": "rejected", "reason": "kyc_not_approved", ... }
+    ```
+
+    > 記録そのものに失敗した稀なケースでは `transferId` を**載せません**（引けない ID を
+    > 返さないため）。その場合もサーバ側にはエラーログが残ります。
+
+    ### 冪等性
+
+    同じ `Idempotency-Key` で再送しても**指示は 1 件しか作られません**。
+    同一キーで金額やユーザーを変えて送った場合は `409` で拒否します
+    （`$300` の結果を `$3000` のリクエストに返さないため）。詳細は **idempotency.md**。
+
+    ## GET /pool/transfer/{transferId}
+
+    指示 1 件の状態照会。
+
+    - 200:
+      ```json
+      {
+        "transferId": "pt_...",
+        "userId": "<uuid>",
+        "amount": "300.00",
+        "currency": "USD",
+        "status": "settled",
+        "reason": null,
+        "settlementMode": "simulate",
+        "createdAt": "...",
+        "settledAt": "...",
+        "failedAt": null
+      }
+      ```
+    - `status` … `pending` | `settled` | `failed` | `rejected`
+    - `settlementMode` … サンドボックスでは `simulate` です（下記「決済モード（sandbox と本番の違い）」を参照）。
+      本番モードの値は本番環境のご案内時に別途お知らせします。
+    - 404: 見つからない（他社の指示は存在しても 404）
+
+    ## GET /pool/transfers
+
+    指示の一覧。
+
+    - query: `status`, `userId`, `from`, `to`（ISO 8601）, `limit`（1..200, 既定 50）, `offset`（0 以上, 既定 0）
+    - 200: `{ "data": [ ...GET /pool/transfer と同じ形... ], "paging": { limit, offset, total } }`
+    - 400: `status` / `userId` / `limit` / `offset` / `from` / `to` が不正、または**受け付けない引数名**（下記「クエリ引数の検証」）
+
+    `userId` は **uuid**（`GET /users/list` の `userId` と同じ値）だけを受け付けます。
+    `status` は `pending` / `settled` / `failed` / `rejected` のいずれかです。
+    **いずれも形式・語彙が違えば `400`** で、`0` 件の `200` にはなりません
+    （絞り込めていない一覧・該当なしの一覧と、御社側のタイポを区別できるようにするためです）。
+
+    ```bash
+    # uuid でない userId
+    $ curl -s "$BASE_URL/pool/transfers?userId=abc" -H "Authorization: Bearer $TOKEN"
+    {"message":"userId must be a uuid (e.g. \"3f8c1e2a-5b47-4d9e-8a10-2c6b7d0e4f51\")","code":400}
+
+    # 語彙外の status
+    $ curl -s "$BASE_URL/pool/transfers?status=abc" -H "Authorization: Bearer $TOKEN"
+    {"message":"status must be one of: pending, settled, failed, rejected","code":400}
+    ```
+
+    形式が正しく、その uuid のユーザーが御社に属していない（または存在しない）場合は
+    `200` で `"total": 0` を返します — **「形式が違う」と「該当が無い」は別の応答**です。
+
+    #### 却下された指示の `userId`
+
+    `userId` に御社が知らないユーザーを指定した指示は `unknown_user` で却下されますが、
+    **却下の記録自体は残り**、一覧・`GET /pool/transfer/{transferId}` のどちらにも
+    **御社が指定した `userId` がそのまま** 入って返ります（Pay3 側のユーザーには紐付いていません）。
+
+    `?userId=` はこの**却下行も一緒に**絞り込みます。つまり **一覧・詳細・コンソールが
+    `userId` として表示している値をそのまま `?userId=` に渡せば、その指示が引けます** —
+    誤った `userId` でチャージ指示を出したときの調査は、その値 1 つで完結します。
+
+    ```bash
+    # 却下された指示も、表示されている userId で引けます
+    curl -s "$BASE_URL/pool/transfers?userId=$USER_ID&status=rejected" \
+      -H "Authorization: Bearer $TOKEN"
+    ```
+
+    `from` / `to` は **`createdAt`（指示を受理した時刻）**で絞り込みます。`settledAt` ではありません
+    — 台帳（`GET /pool/ledger` の `transfer` 行）も受理時に記録されるため、同じ `from` / `to` を
+    両方に渡せば同じ区間が突き合わせられます。
+
+    **日付のみ（`2026-09-15`）で指定した `to` は、その日を丸ごと含みます**。
+    したがって **1 日ぶんは `?from=X&to=X`** で取れます（下記「日付の指定」参照）。
+
+    ```bash
+    curl -s "$BASE_URL/pool/transfers?from=2026-09-14&to=2026-09-16&limit=50" \
+      -H "Authorization: Bearer $TOKEN"
+
+    # 1 日ぶん（2026-09-15 の 00:00:00Z 〜 23:59:59.999999Z）
+    curl -s "$BASE_URL/pool/transfers?from=2026-09-15&to=2026-09-15&limit=50" \
+      -H "Authorization: Bearer $TOKEN"
+    ```
+
+    ## GET /pool/ledger
+
+    プール残高の増減履歴。
+
+    - query: `type`, `from`, `to`（ISO 8601）, `limit`（1..200, 既定 50）, `offset`（0 以上, 既定 0）
+    - 400: `type` / `limit` / `offset` / `from` / `to` が不正、または**受け付けない引数名**（下記「クエリ引数の検証」）
+    - 200:
+      ```json
+      {
+        "data": [
+          { "id": "...", "type": "fee", "amount": "-50.00", "balanceAfter": "9950.00",
+            "referenceId": "tx-...", "metadata": { "rate": "0.0050" }, "createdAt": "..." },
+          { "id": "...", "type": "deposit", "amount": "10000.00", "balanceAfter": "10000.00",
+            "referenceId": "tx-...", "metadata": null, "createdAt": "..." }
+        ],
+        "paging": { "limit": 50, "offset": 0, "total": 5 }
+      }
+      ```
+
+    - 並び順は `createdAt` の**降順**（新しい行が先頭）。上の例は残高 0 のプールへ
+      10,000.00 USDT が着金したときの 2 行で、**新しい `fee` 行が先・`deposit` 行が後**に並びます。
+
+    **`balanceAfter` は走行残高です** — その行を適用した**直後**のプール残高を返します。
+    入金は「総額を入れてから手数料を引く」2 行に分かれるため、`deposit` 行は控除前
+    （`10000.00`）、`fee` 行が控除後（`9950.00`）になります。古い行から順に `amount` を
+    足していくと、各行の `balanceAfter` と一致します。
+
+    **プール残高が動く操作は、例外なく台帳に 1 行を残します**（逆に、残高が動かない操作は
+    行を作りません）。チャージ指示について具体的には:
+
+    | 起きたこと | 台帳 |
+    |---|---|
+    | 指示を受理（202） | `transfer` 行（−）が**その時点で**記録されます。残高はここで減ります |
+    | 指示が `settled` になった | 新しい行は増えません（残高は受理時に減算済み）。`transfer` 行の `metadata` に `settlement_mode` が付きます |
+    | 指示が `failed` になった | `refund` 行（＋）が加わり、受理時の `transfer` 行と**同額で相殺**されます |
+    | 受理拒否（402 / 404 / 412） | 行は作られません（残高が動いていないため）。拒否の記録は `GET /pool/transfers` 側にあります |
+
+    つまり `pending` の指示も台帳に現れます。「残高は減っているのに台帳に無い」区間は
+    ありません。行の `referenceId` が `transferId` なので、`GET /pool/transfer/{transferId}`
+    と突き合わせれば各行の確定状態が分かります。
+
+    `metadata` は行ごとの補足（自由形式）です。`fee` 行には控除に使った料率が
+    `{"rate": "0.0050"}` の形で入ります。**料率は `GET /pool/deposit_address` の `feeRate` と
+    同じく小数 4 桁固定の文字列**で、数値型では返しません。
+
+    `type` の意味:
+
+    | type | 符号 | 内容 |
+    |---|---|---|
+    | `deposit` | + | USDT 入金の反映（控除前の総額） |
+    | `fee` | − | 入金時の控除（既定 0.5%） |
+    | `transfer` | − | ユーザーへのチャージ差引（**受理時**に記録。確定後は `metadata.settlement_mode` が付きます） |
+    | `refund` | + | チャージ失敗時の返還（同じ `referenceId` の `transfer` 行と相殺） |
+    | `withdrawal` | − | プール残高を USD → USDT へ戻した出金 |
+    | `adjustment` | ± | 運用上の調整 |
+
+    `?type=` に渡せるのは**この表の 6 つだけ**です。それ以外は `400` で、`0` 件の `200` には
+    なりません（`GET /pool/transfers` の `status` と同じ規則です）。
+
+    ```bash
+    # 表に無い type
+    $ curl -s "$BASE_URL/pool/ledger?type=charge" -H "Authorization: Bearer $TOKEN"
+    {"message":"type must be one of: deposit, fee, transfer, refund, withdrawal, adjustment","code":400}
+
+    # 大文字・カンマ区切りも受け付けません（1 回に 1 つだけ指定できます）
+    $ curl -s "$BASE_URL/pool/ledger?type=DEPOSIT" -H "Authorization: Bearer $TOKEN"
+    {"message":"type must be one of: deposit, fee, transfer, refund, withdrawal, adjustment","code":400}
+    $ curl -s "$BASE_URL/pool/ledger?type=deposit,fee" -H "Authorization: Bearer $TOKEN"
+    {"message":"type must be one of: deposit, fee, transfer, refund, withdrawal, adjustment","code":400}
+    ```
+
+    > **コンソールの表記と `type` の値は違います。** 画面の台帳はユーザーへのチャージ差引を
+    > 「チャージ」と表示しますが、API の `type` は **`transfer`** です。`?type=charge` は
+    > 上記のとおり `400` になります（黙って 0 件を返して「その期間にチャージが無かった」と
+    > 読ませないためです）。
+
+    `?type=`（空）は「指定なし」= 全件です。
+
+    ---
+
+    ## クエリ引数の検証
+
+    一覧系（`GET /pool/transfers` / `GET /pool/ledger` / `GET /users/list` /
+    `GET /referral-codes`）と `GET /pool/balance` のクエリ引数は**受け付けられない値も、
+    受け付けない引数名も、黙って丸めたり無視したりしません**。範囲外・形式違い・未知の引数名はすべて
+    `400` のエラー JSON（`{ "message": ..., "code": 400 }`）で返します。
+
+    | 引数 | 受け付ける値 | 既定 |
+    |---|---|---|
+    | `limit` | 1〜200 の**十進整数**（`1e2` / `1.5` / `abc` / `-1` / `0` / `201` は 400） | 50 |
+    | `offset` | 0 以上の**十進整数**（負値・非整数は 400）。**総件数を超える `offset` は `200` の空ページ**（`"data": []`・`"total"` は絞り込み後の総件数） | 0 |
+    | `from` / `to` | **ISO 8601** の日付 `2026-09-14` またはオフセット付き日時 `2026-09-14T00:00:00Z` / `2026-09-14T09:00:00+09:00`。実在しない日付（`2026-02-30` / `2026-13-45`）は 400。**秒の小数部は 6 桁（μs）まで**（7 桁以上は 400） | フィルタ無し |
+    | `type`（`/pool/ledger`） | `deposit` / `fee` / `transfer` / `refund` / `withdrawal` / `adjustment` の**いずれか 1 つ**（大文字・カンマ区切り・表に無い値は 400） | フィルタ無し |
+    | `status`（`/pool/transfers`） | `pending` / `settled` / `failed` / `rejected` の**いずれか 1 つ**（同上） | フィルタ無し |
+    | `userId`（`/pool/transfers`） | **uuid**（形式が違えば 400。形式が正しく該当が無ければ `200` で `"total": 0`） | フィルタ無し |
+
+    空文字（`?from=`）は「指定なし」として扱います。
+
+    #### 日付の指定（`from` / `to` の境界）
+
+    **日付のみを指定した場合の基準は UTC です。**
+
+    | 指定 | 解釈される境界 |
+    |---|---|
+    | `from=2026-09-15`（日付のみ） | `2026-09-15T00:00:00Z` **以降**（その日の始まり） |
+    | `to=2026-09-15`（日付のみ） | `2026-09-15T23:59:59.999999Z` **まで** = **その日を丸ごと含みます** |
+    | `from` / `to` に日時を指定 | 指定した時刻がそのまま境界（両端とも含みます） |
+
+    したがって **1 日ぶんを取るには `?from=2026-09-15&to=2026-09-15`** と書きます
+    （`to` に翌日を渡す必要はありません）。日時で書くなら
+    `?from=2026-09-15T00:00:00Z&to=2026-09-15T23:59:59Z` が同じ区間です。
+
+    ```bash
+    # 下の 2 本は同じ区間を返します（total が一致します）
+    curl -s "$BASE_URL/pool/transfers?from=2026-09-15&to=2026-09-15" \
+      -H "Authorization: Bearer $TOKEN"
+    curl -s "$BASE_URL/pool/transfers?from=2026-09-15&to=2026-09-15T23:59:59Z" \
+      -H "Authorization: Bearer $TOKEN"
+    ```
+
+    > 日本時間で集計される場合はご注意ください。日付のみの指定は UTC 基準なので、
+    > `from=2026-09-15&to=2026-09-15` に入るのは JST では 9/15 09:00 〜 9/16 08:59:59 の
+    > 取引です。JST の 1 日で切るには日時（`+09:00`）で指定してください
+    > （例: `?from=2026-09-15T00:00:00+09:00&to=2026-09-15T23:59:59+09:00`）。
+
+    **秒の小数部は 6 桁（μs）まで**です。記録されている時刻が μs 精度のため、7 桁以上
+    （ナノ秒）を指定すると `400` になります（黙って 6 桁に丸めません）。
+
+    ```bash
+    # 6 桁までは受け付けます
+    $ curl -s "$BASE_URL/pool/ledger?to=2026-09-15T23:59:59.999999Z" \
+      -H "Authorization: Bearer $TOKEN"
+
+    # 7 桁は 400（`from` も同じ規則です）
+    $ curl -s "$BASE_URL/pool/ledger?to=2026-09-15T23:59:59.9999999Z" \
+      -H "Authorization: Bearer $TOKEN"
+    {"message":"to must be an ISO 8601 date or datetime (e.g. \"2026-09-14\" or \"2026-09-14T00:00:00Z\")","code":400}
+    ```
+
+    ### 受け付ける引数名（これ以外は 400）
+
+    引数名は**大文字小文字を区別します**（`userid` は `userId` ではありません）。
+
+    | エンドポイント | 受け付ける引数 |
+    |---|---|
+    | `GET /pool/ledger` | `type`, `from`, `to`, `limit`, `offset` |
+    | `GET /pool/transfers` | `status`, `userId`, `from`, `to`, `limit`, `offset` |
+    | `GET /users/list` | `limit`, `offset` |
+    | `GET /referral-codes` | （なし。常に全件を返します） |
+    | `GET /pool/balance` | （なし。常に現在の残高を返します） |
+    | `GET /pool/deposit_address` | （なし。常に登録済みのアドレスを返します） |
+
+    表に無い引数を付けると `400` になり、本文にそのエンドポイントが受け付ける引数名が
+    列挙されます。
+
+    ```bash
+    $ curl -s "$BASE_URL/pool/ledger?userid=abc" -H "Authorization: Bearer $TOKEN"
+    {"message":"Unknown query parameter \"userid\". Accepted: type, from, to, limit, offset","code":400}
+    ```
+
+    引数名だけでなく**値**も同じ規則です。`GET /pool/transfers` の `userId`（uuid 形式）と
+    `status`（`pending` / `settled` / `failed` / `rejected`）は、形式・語彙が違えば `400` で、
+    受け付ける形式・値が本文に出ます（上記「GET /pool/transfers」参照）。
+
+    > 御社のページング・日付フィルタの実装に誤りがあった場合、Pay3 側で勝手に別の値へ
+    > 読み替えたり、知らない引数を捨てて全件を返したりすると、誤りが発覚しません。
+    > 引数名の綴り違いは「絞り込めていない一覧」として返るのが最も見つけにくいため、
+    > 値と同じく 400 で明示的に返します。
+
+    ## 未知のパス・エラー本文の形式
+
+    - 認識できないパス・未対応の HTTP メソッドは **JSON の 404**
+      （`{ "message": "Unknown endpoint. ...", "code": 404 }`）を返します。
+      綴り違い（例: `POST /pool/tranfer`）が「成功」で返ることはありません。
+    - **この 404 の約束が掛かる範囲は `/pool/*`・`/referral-codes*`・`/users/*`・`/oauth/*` です。**
+      `/kyc/*` と `/card/*` の未知サブパス（例: `GET /kyc/zzz`）は、現状
+      **JSON ではなく `500` の `text/plain`** を返します。既存のモバイルアプリ経路と実行順を
+      共有しているため、引き渡し後に JSON 404 へ揃えます。それまでは下記「4xx / 5xx が常に
+      JSON とは限りません」と同じ扱い（`content-type` を見る）で実装してください。
+    - **ただし 4xx / 5xx が常に JSON とは限りません。** リクエストが Pay3 のアプリケーションに
+      到達する前に、エッジ（Supabase / Cloudflare）が独自の応答を返すことがあります。
+      実測している例（2026-09-16 再実測）:
+      - URL に**不正なパーセントエンコード**（生の `%` 等）を含む → `500` の `text/plain`
+        （`error code: 1101`）
+      - パスに **SQL インジェクションに見える並び**（例: `/referral-codes/'%20OR%201=1--`）を含む
+        → Cloudflare WAF の **HTML の 403**。`'` を 1 文字含むだけ（例: `/referral-codes/a'b`）では
+        発火せず、通常の JSON 応答になります
+
+      いずれも Pay3 側では制御できません。**ベース URL のホストを変えても同じ**です
+      （`api-staging.pay-3.io` と、その CNAME 先を直接叩いた場合とで、ステータス・`content-type`・
+      本文が一致することを確認しています）。エラー処理は `content-type` を確認し、
+      **JSON でない本文でもパーサが落ちない**ように実装してください。
+
+    ## 決済モード（sandbox と本番の違い）
+
+    決済モードは **クライアントごと** に Pay3 側が設定します（設定は Pay3 の内部運用の専権で、
+    パートナー向け API から変更することはできません）。
+
+    | 値 | 挙動 |
+    |---|---|
+    | `simulate` | **実際に資金が動きます**（プール残高 → ユーザーのカード残高）。サンドボックス用の値です |
+
+    サンドボックスで定義している値は `simulate` のみです。本番モードの値は本番環境のご案内時に別途お知らせします。
+
+    > プールへの入金（オンチェーンの着金）の検知は決済モードとは別の経路で、**サンドボックスでも自動で動きます**
+    > （2026-09-18 に実配信で確認済み。§5 と `pool.deposit.credited` を参照）。
+
+    - **モードが未設定のクライアントは `POST /pool/transfer` が `503` を返します。** 既定値を
+      持たせていないのは、設定漏れのまま本番に出ると「実資金が動いていないのに台帳上は成功」
+      という状態を作ってしまうためです。
+    - sandbox を使い始める前に、お使いのクライアントが `simulate` に設定されていることを
+      Pay3 側で確認してください（未設定だと 503 になります）。
+    - `simulate` でも資金移動は本番と同じ経路を通ります。したがって **`settled` になったチャージ指示は
+      カード残高に実際に反映されています**。資金が動かせなかった場合（プール原資の不足・決済基盤側の
+      エラー）は `settled` にはならず、`failed` として理由付きで記録され、プール残高へ返還されます。
+    - 設定はクライアント単位なので、**同じ環境で別のクライアントが本番モードで動いていても
+      互いに影響しません**（sandbox の試験導入が本番の決済モードを動かすことはありません）。
+    - `simulate` で確定した行は `settlementMode: "simulate"` が付き、台帳の `metadata` にも
+      残ります。本番切替後に「sandbox 時代の行が実移動済みに見える」ことはありません。
+
+    ## 未実装 / 制約（2026-09-18 時点）
+
+    - 本番モード（`settlementMode` の本番値）の実資金移動は未実装です。sandbox の受入テストは `simulate` で行ってください。
+    - `userId` は Pay3 の uuid のみ受け付けます。`P123456` 形式の対外 ID は未採番です。
+    - プール入金の着金検知は**自動で動きます**（2026-09-18 にテストネット USDC で確認済み）。検知できなかった着金は
+      保留として記録し、Pay3 側が手当てします（黙って捨てません）。
+    - USD → USDT の出金は元帳への記録のみ自動化されており、**実際の USDT 送金は運用手作業**です。
+
+    ---
+
+    # Referral Codes（紹介コード）
+
+    御社の紹介コード（代理店コード）を登録し、コード付きリンク経由で登録したユーザーを
+    そのコードに紐付けます。
+
+    すべて `Authorization: Bearer <accessToken>` が必要です。
+    Base URL (sandbox): `https://api-staging.pay-3.io/functions/v1/external-service`
+
+    > **ベース URL は末尾の `/external-service` まで含みます**（仕様書 §2 と同じ定義です）。
+    > 以下の見出しのパスはすべてそのベース URL の直下です
+    > （例: `GET {BASE_URL}/referral-codes`）。同じ注記が **pool.md** の冒頭にあります。
+
+    ## 必要なスコープ
+
+    | スコープ | 範囲 |
+    |---|---|
+    | `referrals:read` | 一覧の取得 |
+    | `referrals:write` | 登録・有効化切替・削除（`referrals:read` を含む） |
+
+    ## コードの規則
+
+    - 英数字・ハイフン・アンダースコアの 3〜64 文字。
+    - **大文字小文字は区別しません**。`PARTNER-A` と `partner-a` は同じコードで、共存できません。
+    - **早い者勝ち**。全社横断で一意です（ユーザーの登録導線が 1 つの名前空間のため）。
+    - **誤登録は「変更」ではなく「削除して新規作成」**してください。改名 API は提供しません
+      （カスケード変更と履歴の取り扱いを避けるための明示的な決定です）。
+
+    ## GET /referral-codes
+
+    自社のコード一覧。
+
+    - 200:
+      ```json
+      {
+        "data": [
+          { "code": "PARTNER-A", "enabled": true, "label": "代理店A",
+            "link": "https://app.pay-3.io/?ref=PARTNER-A",
+            "createdAt": "...", "updatedAt": "..." }
+        ]
+      }
+      ```
+    - **クエリ引数は受け付けません。** 常に自社の全コードを新しい順で返します
+      （ページングも絞り込みもありません）。`?enabled=true` のような引数を付けると `400` で、
+      本文は `Unknown query parameter "enabled". Accepted: (none)` になります。
+      効いていない引数を黙って捨てて「絞り込めたように見える全件」を返さないためです
+      （詳細は **pool.md の「クエリ引数の検証」**）。
+
+    ## POST /referral-codes
+
+    - body: `{ "code": "PARTNER-A", "label": "代理店A", "enabled": true }`
+      - `label` / `enabled` は省略可（`enabled` の既定は `true`）
+    - 201: 上記 1 件の形
+    - 400: コードの形式が不正
+    - 409: 既に使われている（早い者勝ち）
+
+    ## PATCH /referral-codes/{code}
+
+    有効化 / 無効化のみ。
+
+    - body: `{ "enabled": false }`
+    - 200: 更新後の 1 件
+    - 400: `enabled` 以外を変更しようとした（改名は削除 → 新規作成）
+    - 404: 見つからない
+
+    無効化したコードは新規の紐付けに使えなくなります（`POST /users/register` が 400 を返す）。
+    **既に紐付いたユーザーの帰属は変わりません。**
+
+    ## DELETE /referral-codes/{code}
+
+    - 200: `{ "code": "PARTNER-A", "deleted": true }`
+    - 404: 見つからない
+
+    ユーザーの帰属は登録時点で確定するため、**削除しても過去の帰属・集計は変わりません。**
+    削除は元に戻せないので、コンソールから操作する場合は確認のうえ実行してください。
+
+    > コードは完全一致で照合します。`%` や `_` をパスに入れても
+    > ワイルドカードとして扱われることはありません（一括削除はできません）。
+
+    ---
+
+    ## ユーザーとの紐付け
+
+    `POST /users/register` に `referral_code` を付けて登録すると、
+    そのユーザーがコードに紐付きます。
+
+    ```bash
+    curl -X POST "$BASE_URL/users/register" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -d '{
+            "signup_type": "EMAIL",
+            "signup_type_id": "taro@example.com",
+            "first_name": "Taro",
+            "referral_code": "PARTNER-A"
+          }'
+    ```
+
+    - 成功時のレスポンスに `referralCode` が入ります（紐付かなかった場合は `null`）。
+    - **`referral_code` に指定できるのは、ご自身の client で発行されたコードだけです。**
+      他社が発行したコードは、実在しないコードと**同じ `400`**（同一のレスポンス本文）になります。
+    - **コードが未登録 / 無効化済みの場合は `400` を返し、ユーザーを作成しません。**
+      黙って無視すると「コードを付けたのに紐付いていない」状態が静かに発生するためです。
+    - 紐付けは **1 ユーザー 1 件**で、後から上書きされません。
+
+    ### Web 登録導線（`?ref=` 付きリンク）について
+
+    `GET /referral-codes` が返す `link`（`https://app.pay-3.io/?ref=CODE`）は、
+    **Web 登録画面側での `?ref` 取り込みが未実装のため、現時点では紐付きません。**
+    2026-09-14 時点で紐付けが動作するのは上記の **API 登録経路のみ**です。
+    Web 導線を使う場合は別途 Pay3 側の対応が必要です。
+
+    ---
+
+    # Idempotency
+
+    金銭やプロビジョニングが動く操作（カード発行、KYC submit）は、ネットワーク再送による**二重実行**を防ぐため冪等化されています。
+
+    ## 使い方
+
+    リクエストに `Idempotency-Key` ヘッダを付けます。値は御社が生成する一意な文字列（UUID 推奨）。
+
+    ```bash
+    curl -X POST "$BASE_URL/card/issue_card" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -H "Idempotency-Key: 7c1f...-unique" \
+      -d '{ "userId": "<uuid>", "type": "virtual" }'
+    ```
+
+    ## 挙動
+
+    - 同一 `(client, Idempotency-Key, endpoint)` の初回リクエストのみ実行され、結果が保存されます。
+    - 同じキーで再送すると、**最初の結果がそのまま返ります**（再実行されない＝カードが2枚発行されない）。
+      **これは保存されたレスポンスの再生であって、最新の状態ではありません。** 例えば
+      `POST /pool/transfer` の再送は、その指示が既に `settled` になっていても初回の
+      `{"status":"pending"}` を返します。**最新状態は `GET /pool/transfer/{transferId}` で取得**
+      してください（「同一キーの再送 = 同一応答」を契約として保つためにこの形にしています）。
+    - 同じキーに**異なるボディ**を付けて送ると `409` を返します（別の指示を同じキーで送ってしまった取り違えの検出）。
+    - 最初のリクエストがまだ処理中に同じキーが来た場合は `409`（in progress）を返します。少し待って再送してください。
+    - 最初のリクエストがサーバーエラーで失敗した場合はキーが解放され、同じキーで再試行できます。
+
+    ## 対象エンドポイント
+
+    - `POST /card/issue_card`
+    - `POST /kyc/submit`
+    - `POST /pool/transfer`
+
+    ヘッダ未指定でも動作しますが、**上記の操作では必ず付けることを強く推奨**します。
+
+    ---
+
+    # Webhooks
+
+    Pay3 で発生したイベント（カード発行など）を、御社のエンドポイントへ **push 配信**します。ポーリング不要でリアルタイムに状態を同期できます。
+
+    ## 設定
+
+    受信エンドポイントと署名鍵は、**コンソールの「開発者 → Webhook」**（または API `PUT /developer/webhook` /
+    `GET|POST /developer/webhook/secret`、**endpoints.md**）で御社自身が登録・表示・再発行できます。
+    - 受信エンドポイント（HTTPS）と任意の説明（例: 本番の受信サーバー）
+    - 購読するイベント（下の「イベント種別」から選択。既定は全部。`ping` は購読設定に関係なく届きます）
+    - 署名検証用シークレット（登録時に発行。コンソールの鍵アイコン / `GET /developer/webhook/secret` で**いつでも表示**でき、再発行すると旧鍵は即時失効）
+    - 購読していないイベントは配信されず、配信ログにも載りません
+
+    ## 配信フォーマット
+
+    `webhook_url` に対し `POST`（JSON）で配信されます。
+
+    ヘッダ:
+    - `X-Pay3-Event`: イベント種別（例 `card.issued`）
+    - `X-Pay3-Delivery`: 配信ID（再送時も同一）
+    - `X-Pay3-Signature`: 署名（後述）
+
+    ボディ:
+    ```json
+    {
+      "id": "<delivery-uuid>",
+      "type": "card.issued",
+      "created_at": "2026-09-15T01:50:00.000Z",
+      "data": { "userId": "<uuid>", "cardId": "<uuid>", "cardType": "virtual", "issuedAt": "2026-09-15T01:50:00.000Z" }
+    }
+    ```
+
+    `data` の項目は**イベントごとに定義された項目のみ**です（下表）。カード基盤・本人確認基盤の
+    生レスポンスを中継することはありません。
+
+    ## 署名検証（必須）
+
+    `X-Pay3-Signature` は **受信した生ボディ**に対する HMAC-SHA256（hex）です。鍵は `webhook_secret`。
+
+    検証例（Node.js）:
+    ```js
+    import crypto from "node:crypto";
+
+    function verify(rawBody, signature, secret) {
+      const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+      return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+    }
+    ```
+
+    検証に失敗したリクエストは破棄してください（なりすまし防止）。
+
+    ## リトライ
+
+    - 2xx 応答（200 / 204 など）で配信成功とみなします。
+    - **5xx・10 秒のタイムアウト・接続不能**は一時的な失敗として、**指数バックオフ**で**最大 6 回まで自動再送**します。
+      再送は Pay3 側のスケジューラが **5 分周期**で実行するため、実際の到着は下表の目安から最大 5 分遅れることがあります。
+    - **4xx（400 / 401 / 404 / 409 など）は再送しません**。同じ内容を送り直しても結果は変わらないため、その場で
+      `failed` として確定します（408 / 425 / 429 だけは一時的とみなして再送します）。
+      受信側で署名検証や送信元の確認に失敗している場合は、設定を直してから API で状態を照会してください。
+
+      | 再送 | 直前の失敗からの待ち時間 |
+      |---|---|
+      | 1 回目 | 30 秒 |
+      | 2 回目 | 60 秒 |
+      | 3 回目 | 2 分 |
+      | 4 回目 | 4 分 |
+      | 5 回目 | 8 分 |
+      | 6 回目（最終） | 16 分 |
+
+      待ち時間は 30 秒 × 2^(再送回数 − 1) で、上限は 1 時間です。**6 回の再送とも失敗**した配信は
+      そこで打ち切られ（`failed`）、以降は自動再送されません（初回配送を含めた配信試行は最大 7 回です）。
+      **取りこぼした分の正本は API 側で**照会してください
+      （`GET /pool/ledger`・`GET /pool/transfers`・`GET /users/list`）。
+    - 受信側は**冪等に**処理してください（ボディの `id` = `X-Pay3-Delivery` で重複排除）。再送は
+      **同じ `id`・同じバイト列**で届きます。`created_at` は再送時刻ではなく**元の状態が変わった時刻**（初回送出時に固定）なので、
+      再送で変わりません。
+
+    ## 配信状態（status）の語彙
+
+    Pay3 側は配信ごとに以下の状態を記録しています。お問い合わせの際もこの語でご回答します。
+
+    | 状態 | 意味 |
+    |---|---|
+    | `pending` | 配信待ち（初回、または再試行の待機中） |
+    | `delivered` | 2xx を受け取った（配信成功） |
+    | `failed` | **実際に配信を試みて**失敗し、再送の上限（6 回）に達した |
+    | `skipped_no_endpoint` | `webhook_url` が未登録だったため、**一度も配信を試みていない** |
+
+    `skipped_no_endpoint` は配信の失敗ではありません。`webhook_url` の登録**前**に発生した
+    イベントがこれに当たります。**登録後にまとめて再送されることはありません**（下記の
+    イベント種別の注記を参照）。
+
+    ## イベント種別
+
+    | イベント | 送出タイミング | `data` の項目 | 状況 |
+    |---|---|---|---|
+    | `user.registered` | 貴社経由の新規登録 | `userId, email, name, partnerRefCode, registeredAt` | 提供中 |
+    | `user.kyc.updated` | 本人確認のいずれかの段の結果が変わった | `userId, kycStatus, stage, stageStatus, updatedAt` | 提供中 |
+    | `card.issued` | バーチャルカード発行 | `userId, cardId, cardType, issuedAt` | 提供中 |
+    | `card.activated` | リアルカードのアクティブ化 | `userId, cardId, cardType, activatedAt` | 提供中 |
+    | `pool.deposit.credited` | プール入金の反映 | `referenceId, grossAmount, feeAmount, netAmount, available, currency, transactionHash, chain, sourceAddress, creditedAt` | 提供中 |
+    | `pool.transfer.completed` | チャージ反映完了 | `transferId, userId, amount, settledAt` | 提供中 |
+    | `pool.transfer.failed` | チャージ失敗・残高返還 | `transferId, userId, amount, reason, compensatedAt` | 提供中 |
+
+    - `user.registered` は**ブラウザの `?ref=` サインアップ経路でのみ発火します**。`POST /users/register`
+      経由の登録は同期レスポンスで `userId` が返るため、本イベントは発火しません
+    - `user.registered` の `partnerRefCode` は、`GET /users/list` が同じユーザーに対して返す
+      `referralCode` と**同じ値**です（登録時に確定した貴社の紹介コード）。名前が二形あるのは
+      経路ごとの綴りの違いで、突き合わせは値でそのまま行えます
+    - `user.kyc.updated` は本人確認の **2 段**（一次本人確認 `identity` / カード発行体の審査 `card_issuer`）の
+      どちらかの結果が変わるたびに送られます。`stage` がどの段か、`stageStatus` がその段の新しい状態
+      （`approved` / `rejected` / `pending`）、`kycStatus` が**総合**（`approved` = チャージ指示・カード発行が
+      通る状態。**users.md** の判定表と同じ）です。
+      一次が承認された時点では `stage=identity, stageStatus=approved` でも **`kycStatus` は `pending`** です。
+      カードを発行できるようになったことを知りたい場合は **`kycStatus` が `approved` になったイベント**を待ってください
+      ```json
+      { "userId": "<uuid>", "kycStatus": "pending",  "stage": "identity",    "stageStatus": "approved", "updatedAt": "..." }
+      { "userId": "<uuid>", "kycStatus": "approved", "stage": "card_issuer", "stageStatus": "approved", "updatedAt": "..." }
+      ```
+    - `pool.deposit.credited` はユーザーに紐づかないので `data.userId` はありません。`referenceId` は `<chain>:<transactionHash>`
+      （台帳 `GET /pool/ledger` の `deposit` 行の `referenceId` と同じ値）。`available` は反映直後のプール残高です
+    - `card.activated` はリアルカードのみ（`cardType` は `physical` 固定）。バーチャルカードは
+      発行 = 即利用可能のため `card.issued` のみが送られます
+    - **サンドボックスでの `card.activated` の扱い**: リアルカード用 BIN がサンドボックスで未解放の
+      ため、`card.activated` はサンドボックスでは**実発火を確認できません**（発火点は物理カードの
+      アクティブ化成功時のみで、再アクティブ化では送出しません）。ペイロード形状と発火条件は単体
+      テストで固定してありますが、**実配信の確認は本番の BIN 解放後**に行います
+    - 配信されるのは **`webhook_url` を登録した以降に発生したイベント**のみです。登録前に発生した
+      分は `skipped_no_endpoint` として記録され、**登録後も再送されません**（過去分は
+      `GET /pool/ledger`・`GET /users/list` 等の API で照会できます）
+
+    ## 再配信・テスト
+
+    - テスト配信: コンソール「開発者 → Webhook」の「テスト送信」、または `POST /developer/webhook/test` で
+      `ping` イベントを 1 通配信します。到達は同じ画面の配信ログ（`GET /developer/webhook/deliveries`）で確認できます。
+    - 失敗した配信は Pay3 側が **5 分周期で自動再送**します（上記のリトライ回数まで）。手動での再配信が必要な場合は
+      配信ログの `id` を添えて Pay3 にご連絡ください。
+
+    ---
+
 
 servers:
   - url: https://api-staging.pay-3.io/functions/v1/external-service
