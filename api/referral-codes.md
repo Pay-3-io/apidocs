@@ -39,7 +39,7 @@ Lists all of your codes, newest first.
     ]
   }
   ```
-- `link` is the sign-up link carrying the code: `https://app2.pay-3.io/?ref=<code>` in sandbox, `https://app.pay-3.io/?ref=<code>` in production.
+- `link` is the sign-up link carrying the code. Use the value as returned; the host differs between sandbox and production.
 - **No query parameters are accepted.** Any parameter returns `400` with a body such as `Unknown query parameter "enabled". Accepted: (none)`, so a filter that looks applied but is not can never be mistaken for a complete list. There is no paging and no filtering.
 
 ## POST /referral-codes
