@@ -80,6 +80,7 @@ The pool deposit address. `currency` says what to send, `network` says which cha
 | Production | USDT on TRON |
 
 - Use the returned `currency` and `network` pair as given. Any other asset sent to the address does not arrive; it can be neither detected nor refunded.
+- **Each deposit must be at least 50** (USDC or USDT). A deposit below 50 is not credited to the pool and is not refunded automatically; contact Pay3 if this happens.
 - Sandbox exercises the whole path — address, credit, ledger row, webhook — but it is a different rail from production. Testnet USDC is available from public faucets.
 - If `network` is `SANDBOX` and `address` starts with `0xSANDBOX_`, no real address has been issued yet. Do not send funds to it.
 - `409` — no deposit address has been issued. Do not send funds.
