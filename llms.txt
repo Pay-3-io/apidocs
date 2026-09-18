@@ -1,0 +1,23 @@
+# Pay3 External (B2B) API
+
+> Pay3 のカード発行・KYC・決済インフラを、御社の UI を保ちながら API 経由で利用するための B2B API。
+> パートナー（B2B クライアント）は OAuth でアクセストークンを取得し、ユーザー登録 → KYC → カード発行 → 利用 の各操作を行う。
+> Base URL (sandbox): https://api-staging.pay-3.io/functions/v1/external-service
+> 全エンドポイントの正規仕様は openapi.yaml を参照。
+
+## Docs
+
+- [Quickstart](api/quickstart.md): 認証からカード発行までの最短手順
+- [Authentication](api/authentication.md): OAuth アクセストークンの取得とテナント分離
+- [Endpoints](api/endpoints.md): 全エンドポイントのリファレンス（users / kyc / card / pool / referral-codes / developer）
+- [Users](api/users.md): 自社ユーザーの一覧・照会と段付き KYC 状態
+- [Partner Pool](api/pool.md): プール残高・入金先・チャージ指示・台帳
+- [Referral Codes](api/referral-codes.md): 紹介コードの発行・無効化と登録リンク
+- [Idempotency](api/idempotency.md): Idempotency-Key による二重実行防止
+- [Webhooks](api/webhooks.md): イベント受信・署名検証・リトライ・再配信
+- [Environments](api/environments.md): sandbox / production と動作確認
+
+## Specs
+
+- [OpenAPI](openapi.yaml): 機械可読な API 仕様 (OpenAPI 3.0.3)
+- [API Reference](reference.html): OpenAPI を Scalar で描画した対話型リファレンス

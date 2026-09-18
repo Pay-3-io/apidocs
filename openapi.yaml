@@ -1,136 +1,110 @@
-openapi: 3.1.0
-
+openapi: 3.0.3
 info:
   title: Pay3 External API
-  version: "1.1.0"
-  summary: Card issuance, KYC, and crypto-funding APIs for Pay3 partners.
-  description: |
-    The **Pay3 External API** lets partners embed Pay3's card-issuance, KYC, and
-    crypto-funding infrastructure into their own product while keeping their own UI.
-
-    ## Authentication
-
-    Authentication is a two-step flow:
-
-    1. **Get an access token** — call [`POST /oauth/access-token`](#tag/authentication/post/oauth/access-token)
-       with your `clientId` and `clientSecret`. You receive a bearer `accessToken`.
-    2. **Call the API** — send the token on every other request:
-
-       ```
-       Authorization: Bearer <accessToken>
-       ```
-
-    Tokens are short-lived (default **1 hour**). When a token expires the API returns
-    `401 Token expired`; request a new one and retry. Treat `clientSecret` and access
-    tokens as secrets — never expose them in a browser or mobile client.
-
-    ## Idempotency
-
-    Mutating endpoints that create resources (`POST /card/issue_card`, `POST /kyc/submit`)
-    accept an optional **`Idempotency-Key`** header. Reusing the same key replays the
-    original response instead of performing the action again, so a network retry can
-    never double-issue a card. A request still in flight for the same key returns `409`.
-    Use a fresh UUID per logical operation.
-
-    ## Webhooks
-
-    Pay3 delivers events (e.g. [`card.issued`](#tag/webhooks)) to the `webhook_url`
-    registered for your client. Each delivery is signed with
-    `X-Pay3-Signature: hex(HMAC_SHA256(webhook_secret, rawBody))`. Verify the signature,
-    respond `2xx` quickly, and dedupe on `X-Pay3-Delivery`. Non-`2xx` responses are
-    retried with exponential backoff.
-
-    ## Environments
-
-    The base URL below is **production**. Sandbox access (test cards, mock balances) is
-    provisioned per partner with separate credentials — contact your Pay3 representative.
-
-    ## Errors
-
-    Errors share a single shape — `{ "message": string, "code": integer }` — and use
-    conventional HTTP status codes (`400`, `401`, `409`, `500`).
-  contact:
-    name: Pay3 Partnerships
-    url: https://pay-3.io
+  version: "1.2.0"
+  description: A system that allows external corporations (Partners) to use Pay3’s card issuance, KYC, and payment infrastructure while maintaining their own UI.
 
 servers:
+  - url: https://api-staging.pay-3.io/functions/v1/external-service
+    description: "sandbox (Development)"
   - url: https://api.pay-3.io/functions/v1/external-service
-    description: Production
+    description: "production"
+
+tags:
+  - name: Auth
+    description: "Access tokens for the data plane"
+  - name: Users
+    description: "Register and look up your own end users"
+  - name: KYC Service
+    description: "Identity verification (Sumsub) and card-platform onboarding"
+  - name: Card Service
+    description: "Quote, issue, and manage cards"
+  - name: Pool
+    description: "Partner pool: balance, deposit address, top-up instructions, ledger"
+  - name: Referral codes
+    description: "Referral codes and sign-up links attributed to your client"
+  - name: Developer
+    description: "Your own credentials, webhook endpoint, and source-IP allowlist (same as the console's Developer menu)"
 
 security:
   - bearerAuth: []
-
-tags:
-  - name: Authentication
-    description: Exchange client credentials for a short-lived bearer access token.
-  - name: Users
-    description: Register end users under your client and look them up.
-  - name: KYC
-    description: Drive the user's identity verification (powered by Sumsub).
-  - name: Cards
-    description: Card applications, issuance, management, transactions, and crypto funding.
 
 paths:
   /oauth/access-token:
     post:
       tags:
-        - Authentication
-      summary: Generate access token
-      operationId: generateAccessToken
-      description: |
-        Exchanges your `clientId` and `clientSecret` for a short-lived bearer access
-        token used to authenticate every other endpoint.
+        - Auth
+      summary: Generate OAuth access token
+      operationId: createAccessToken
       security: []
+      description: |
+        Generates an OAuth access token for accessing the external service.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required:
-                - clientId
-                - clientSecret
               properties:
                 clientId:
                   type: string
-                  description: Your Pay3 client identifier.
-                  example: pay3_partner_acme
+                  description: Opaque client ID shown in the console (`client_` + 32 hex).
+                  example: "client_9f2c1b7e4d0a4c8e9b1f2a3c4d5e6f70"
                 clientSecret:
                   type: string
-                  description: Your Pay3 client secret. Keep this server-side only.
-                  example: cQ4n8Lp2Rx7Tw0cJ6Hb3Vk9Fm1Ds5Az
+                  description: API key (`pay3_sk_test_…` for sandbox, `pay3_sk_live_…` for production). Shown once at issuance.
+                  example: "pay3_sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
       responses:
         "200":
-          description: Access token generated successfully.
+          description: Successful operation
           content:
             application/json:
               schema:
                 type: object
                 properties:
+                  message:
+                    type: string
+                    example: OAuth access token generated successfully
+                  accessToken:
+                    type: string
+                    example: "eyJjbGllbn********tIiwiY2xpZW50X2FwaV9rZXkiOiJkNm9zS0tRWUczZVdUbkE4Q0djVWprWDlpaUN4bnlldUdibXBOVHR3MF9jIiwidGltZXN0YW1wIjoxNzYyNDQ3NzAwMjE3LCJ1dWlkIjoiODY3ZWY5YjctYjM1NC00OWUwLTgyNTktYzIyYjUxMTkwZDZjIn0=./V9EI/wBvkf3qZ2G*****dWQxBBKVsE4+E="
                   success:
                     type: boolean
                     example: true
-                  message:
-                    type: string
-                    example: Oauth access token generated successfully
-                  accessToken:
-                    type: string
-                    description: "Bearer token to send as `Authorization: Bearer <accessToken>`."
-                    example: "eyJjbGllbnRfbmFtZSI6InBheTNfcGFydG5lcl9hY21lIiwidGltZXN0YW1wIjoxNzYyNDQ3NzAwMjE3fQ==.V9EIwBvkf3qZ2GdWQxBBKVsE4E="
         "400":
-          $ref: "#/components/responses/InvalidCredentials"
+          description: |
+            The request body could not be parsed as JSON
+            (`{ "message": "Invalid JSON body", "code": 400 }`), or `clientId` was absent
+            (`{ "message": "Client ID or name is required", "code": 400 }`). Input errors are
+            never reported as `500`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: |
+            The `clientId` / `clientSecret` pair is not accepted
+            (`{ "message": "Invalid client credentials", "code": 401 }`).
+            **"No such client name" and "wrong client secret" return the byte-identical
+            response** — splitting them would turn this endpoint into a client-name
+            existence oracle. Which side failed is recorded in Pay3's server-side logs only.
+            Note `clientId` is the opaque client ID (`client_` + 32 hex) shown in the console; the display name still works for clients created before 2026-09-18. Passing the internal UUID also
+            yields this `401`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /users/register:
     post:
       tags:
         - Users
-      summary: Register a user
       operationId: registerUser
+      summary: Register a new user
       description: |
-        Registers a new end user under your client. Returns the Pay3 `userId` you use
-        for every subsequent call (KYC, card issuance, etc.).
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
+        Registers a new user with basic information such as first name, last name, and signup type.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -144,31 +118,19 @@ paths:
               properties:
                 first_name:
                   type: string
-                  example: Alex
+                  example: Pratham1
                 last_name:
                   type: string
-                  example: Rivera
+                  example: ""
                 signup_type_id:
                   type: string
-                  description: The user's unique identifier on your platform.
                   example: "835519111"
                 signup_type:
                   type: string
-                  description: The platform the user signed up from.
                   example: TELEGRAM
-                email:
-                  type: string
-                  format: email
-                  example: alex.rivera@example.com
-                phone_number:
-                  type: string
-                  example: "+15555550123"
-                telegram_id:
-                  type: string
-                  example: "835519111"
       responses:
         "200":
-          description: User registered successfully.
+          description: User registered successfully
           content:
             application/json:
               schema:
@@ -185,42 +147,70 @@ paths:
                     properties:
                       first_name:
                         type: string
-                        example: Alex
+                        example: Pratham1
                       last_name:
                         type: string
-                        example: Rivera
-                      userId:
-                        type: string
-                        format: uuid
-                        example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                        example: ""
                       card_issued:
                         type: boolean
                         example: false
+                      userId:
+                        type: string
+                        example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: |
+            Invalid request. Returned for a body that cannot be parsed as JSON
+            (`Invalid JSON body`), an unsupported `signup_type`
+            (`Unsupported signup_type`), a missing or empty `signup_type_id`
+            (`User data missing`), and an unknown or foreign `referral_code`
+            (`referral_code is unknown or disabled`). No user is created.
+            Input errors are never reported as `500`; a `500` always means a
+            Pay3-side fault that is safe to retry unchanged.
+            Identity matching is a **byte-for-byte** comparison of
+            `signup_type_id` — Pay3 applies no normalisation, so the caller must
+            send EMAIL in lower case and PHONE in E.164.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/ServerError"
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: |
+            The `signup_type_id` already belongs to a user outside the calling
+            client's tenant. The body carries `message` and `code` only — no
+            `userId`, no name, no card status. Re-registering an existing user of
+            your own tenant is **not** an error: it returns `200` with the same
+            `userId` (see docs/api/junoe-sandbox.md §4).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /users:
     get:
       tags:
         - Users
-      summary: Get a user
       operationId: getUser
-      description: Retrieves a user that belongs to your client.
+      summary: Get user by ID
+      description: |
+        Retrieves user information if the ID is provided.
       parameters:
         - name: id
           in: query
           required: true
-          description: The Pay3 user ID (UUID).
           schema:
             type: string
-            format: uuid
+          description: The user ID (UUID)
+      security:
+        - bearerAuth: []
       responses:
         "200":
-          description: User fetched successfully.
+          description: Successful operation
           content:
             application/json:
               schema:
@@ -233,21 +223,292 @@ paths:
                     type: integer
                     example: 0
                   data:
-                    $ref: "#/components/schemas/User"
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                      first_name:
+                        type: string
+                        example: Pratham1
+                      last_name:
+                        type: string
+                        example: ""
+                      email:
+                        type: string
+                        nullable: true
+                        example: null
+                      phone_number:
+                        type: string
+                        nullable: true
+                        example: null
+                      telegram_id:
+                        type: string
+                        example: "835519111"
+                      client_id:
+                        type: string
+                        example: 1df64a72-72be-4522-a0ed-62a7a608e6d3
+                      created_at:
+                        type: string
+                        format: date-time
+                        example: "2025-11-06T11:24:28.575703+00:00"
+                      updated_at:
+                        type: string
+                        nullable: true
+                        example: null
+                      signup_type_id:
+                        type: string
+                        example: "835519111"
+                      signup_type:
+                        type: string
+                        example: TELEGRAM
+                      card_issued:
+                        type: boolean
+                        example: false
+                      kyc_verified:
+                        type: boolean
+                        nullable: true
+                        example: null
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /users/list:
+    get:
+      tags:
+        - Users
+      operationId: listUsers
+      summary: List partner users (spec §10-3)
+      description: |
+        Lists the users attributed to the calling partner: users that signed up
+        through one of the partner's referral codes, plus users created via
+        `POST /users/register`. This is the same set that `GET /users/{userId}`
+        and `POST /pool/transfer` accept.
+
+        `cardStatus` is a **summary flag** taken from Pay3's own records — the
+        endpoint issues no per-user card lookups, so a slow or unavailable card
+        platform never blocks the list. Card details (count, type, frozen state)
+        come from `GET /users/{userId}`.
+
+        The path is `/users/list` (not `GET /users`): `GET /users?id=` is a
+        separate, pre-existing endpoint and is left untouched.
+
+        Ordering is fixed: newest `registeredAt` first, ties broken by `userId`,
+        so paging with `offset` neither skips nor repeats rows.
+
+        **Unknown query parameters return `400`.** `limit` and `offset` are the
+        only accepted names and they are case-sensitive; a misspelling such as
+        `?userid=` is rejected rather than ignored, because a silently dropped
+        filter comes back as an unfiltered `200` that looks like a valid result.
+        The error body lists the accepted names.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+          description: |
+            Decimal integer between 1 and 200. Out-of-range or non-integer values
+            return `400` — they are never silently clamped.
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Decimal integer, 0 or greater. Negative or non-integer values return `400`.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: |
+            Successful operation. An empty `data` array means the partner has no
+            users yet — it is not an error.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, paging]
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [userId, registeredAt, referralCode, kycStatus, kyc, cardStatus]
+                      additionalProperties: false
+                      properties:
+                        userId:
+                          type: string
+                          example: 5c3ff529-0000-4000-8000-000000000000
+                        registeredAt:
+                          type: string
+                          nullable: true
+                          description: ISO 8601 (UTC).
+                          example: "2026-09-14T10:11:12.000Z"
+                        referralCode:
+                          type: string
+                          nullable: true
+                          description: Null for users created via `POST /users/register`.
+                          example: JUNOE-A
+                        kycStatus:
+                          type: string
+                          enum: [not_submitted, pending, approved, rejected]
+                          description: Overall status. `approved` means a charge / card issuance will go through.
+                          example: approved
+                        kyc:
+                          $ref: "#/components/schemas/KycStages"
+                        cardStatus:
+                          type: string
+                          enum: [issued, not_issued]
+                          example: issued
+                  paging:
+                    type: object
+                    required: [limit, offset, total]
+                    additionalProperties: false
+                    properties:
+                      limit:
+                        type: integer
+                        example: 50
+                      offset:
+                        type: integer
+                        example: 0
+                      total:
+                        type: integer
+                        description: Total number of attributed users, before `limit` is applied.
+                        example: 1
+        "400":
+          description: Invalid `limit` or `offset`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Insufficient scope (`users:status` required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /users/{userId}:
+    get:
+      tags:
+        - Users
+      operationId: getUserById
+      summary: Get partner user status (spec §8)
+      description: |
+        Returns the KYC completion state and card issuance status of a user that
+        belongs to the calling partner.
+
+        Visibility is limited to users attributed to the caller's client
+        (attribution is recorded at sign-up through a partner referral code).
+        Users that are not attributed to the caller — including users that do not
+        exist — return `404`. `403` is never used for this, so the existence of a
+        user id is not disclosed.
+
+        No sensitive data (card number, CVV, BIN, billing address, name, email) is
+        included.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Pay3 user id (currently a UUID). Delivered by the `user.registered` webhook.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [userId, kycStatus, kyc, cards]
+                additionalProperties: false
+                properties:
+                  userId:
+                    type: string
+                    example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                  kycStatus:
+                    type: string
+                    enum: [not_submitted, pending, approved, rejected]
+                    description: Overall status. `approved` means a charge / card issuance will go through.
+                    example: approved
+                  kyc:
+                    $ref: "#/components/schemas/KycStages"
+                  cards:
+                    type: array
+                    description: Empty array when the user has no card.
+                    items:
+                      type: object
+                      required: [cardType, status]
+                      additionalProperties: false
+                      properties:
+                        cardType:
+                          type: string
+                          enum: [virtual, physical]
+                          example: virtual
+                        status:
+                          type: string
+                          enum: [active, issued, shipped, activated, frozen]
+                          example: active
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Insufficient scope (`users:status` required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found, or not attributed to the calling client
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: |
+            Card issuance status could not be retrieved. Distinct from "no cards"
+            — retry rather than treating it as an empty list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /kyc/access-token:
     post:
-      tags:
-        - KYC
+      operationId: createKycAccessToken
       summary: Generate KYC access token
-      operationId: generateKycAccessToken
       description: |
-        Generates a short-lived Sumsub access token used to launch the KYC flow
-        (e.g. with the Sumsub WebSDK) for the given user.
+        Generates a temporary access token for the user's KYC verification process.
+      tags:
+        - KYC Service
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -259,12 +520,11 @@ paths:
               properties:
                 userId:
                   type: string
-                  format: uuid
-                  description: The user starting KYC.
+                  description: The UUID of the user requesting KYC access.
                   example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
       responses:
         "200":
-          description: KYC access token generated successfully.
+          description: KYC Access token generated successfully
           content:
             application/json:
               schema:
@@ -281,28 +541,32 @@ paths:
                     properties:
                       accessToken:
                         type: string
-                        description: Sumsub access token for the WebSDK / mobile SDK.
-                        example: "_act-jwt-eyJhbGciOiJub25lIn0.eyJqdGkiOiJfYWN0LWV4YW1wbGUiLCJ1cmwiOiJodHRwczovL2FwaS5zdW1zdWIuY29tIn0.-v2"
+                        example: "_act-jwt-eyJhbGciOiJub25lIn0.eyJqdGkiOi=========U5YzAtNDhlYy1iOTM4LWRjZjUyYTk2ZjVjNC12MiIsI=====h0dHBzOi8vYXBpLnN1bXN1Yi5jb20ifQ.-v2"
                       userId:
                         type: string
-                        format: uuid
                         example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /kyc/submit:
     post:
-      tags:
-        - KYC
-      summary: Submit KYC for verification
       operationId: submitKyc
-      description: |
-        Submits the user's completed Sumsub applicant for verification and provisions
-        their downstream card account. Idempotent via the `Idempotency-Key` header.
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
+      summary: Submit KYC for verification
+      description: Submits KYC data for the specified user and applicant ID.
+      tags:
+        - KYC Service
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -315,15 +579,13 @@ paths:
               properties:
                 userId:
                   type: string
-                  format: uuid
-                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                  example: ac0d2c0d-610e-45c3-9752-520bd0108e45
                 applicantId:
                   type: string
-                  description: The Sumsub applicant ID for the user.
-                  example: 65f3c1a2b4d5e6f7a8b9c0d1
+                  example: testapplicationId
       responses:
         "200":
-          description: KYC submitted successfully.
+          description: KYC submitted successfully
           content:
             application/json:
               schema:
@@ -340,25 +602,29 @@ paths:
                     properties:
                       applicantId:
                         type: string
-                        example: 65f3c1a2b4d5e6f7a8b9c0d1
+                        example: test
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
-          $ref: "#/components/responses/Unauthorized"
-        "409":
-          $ref: "#/components/responses/IdempotencyConflict"
-        "500":
-          $ref: "#/components/responses/ServerError"
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /card/application/start:
     post:
-      tags:
-        - Cards
-      summary: Start a card application
       operationId: startCardApplication
-      description: |
-        Starts (or returns the in-progress) card application for the user. This call is
-        idempotent — if an application already exists it is returned unchanged.
+      summary: Start card application
+      description: Starts the card application process for a given user and applicant.
+      tags:
+        - Card Service
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -367,14 +633,17 @@ paths:
               type: object
               required:
                 - userId
+                - applicantId
               properties:
                 userId:
                   type: string
-                  format: uuid
-                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                  example: ac0d2c0d-610e-45c3-9752-520bd0108e45
+                applicantId:
+                  type: string
+                  example: testapplicationId
       responses:
         "200":
-          description: Card application started successfully or already exists.
+          description: Card application started successfully or already exists
           content:
             application/json:
               schema:
@@ -390,21 +659,83 @@ paths:
                     type: object
                     properties:
                       application:
-                        $ref: "#/components/schemas/CardApplication"
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                            example: 94655d78-71a8-43a5-9654-7c5996ee51c3
+                          created_at:
+                            type: string
+                            format: date-time
+                            example: "2025-11-08T12:55:54.644752+00:00"
+                          user_id:
+                            type: string
+                            example: ac0d2c0d-610e-45c3-9752-520bd0108e45
+                          whitelisted:
+                            type: boolean
+                            example: false
+                          code_redeemed:
+                            type: string
+                            nullable: true
+                            example: null
+                          phone_verified:
+                            type: boolean
+                            example: false
+                          email_verified:
+                            type: boolean
+                            example: false
+                          kyc_verified:
+                            type: boolean
+                            example: false
+                          personal_data:
+                            type: object
+                            nullable: true
+                            example: null
+                          billing_data:
+                            type: object
+                            nullable: true
+                            example: null
+                          order_data:
+                            type: object
+                            nullable: true
+                            example: null
+                          card_issued:
+                            type: boolean
+                            example: false
+                          card_issued_on:
+                            type: string
+                            nullable: true
+                            example: null
+                          card_id:
+                            type: string
+                            nullable: true
+                            example: null
+                          kyc_status:
+                            type: string
+                            nullable: true
+                            example: null
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/ServerError"
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /card/application:
     post:
+      operationId: updateCardApplication
+      summary: Fetch card application
+      description: Retrieves the card application details for a given user.
       tags:
-        - Cards
-      summary: Fetch the card application
-      operationId: fetchCardApplication
-      description: Retrieves the current card application for the user.
+        - Card Service
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -416,11 +747,10 @@ paths:
               properties:
                 userId:
                   type: string
-                  format: uuid
-                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                  example: ac0d2c0d-610e-45c3-9752-520bd0108e45
       responses:
         "200":
-          description: Card application fetched successfully.
+          description: Card application fetched successfully
           content:
             application/json:
               schema:
@@ -428,7 +758,7 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: Card application fetched successfully
+                    example: Card application fetched
                   code:
                     type: integer
                     example: 0
@@ -436,60 +766,224 @@ paths:
                     type: object
                     properties:
                       application:
-                        $ref: "#/components/schemas/CardApplication"
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                            example: 94655d78-71a8-43a5-9654-7c5996ee51c3
+                          created_at:
+                            type: string
+                            format: date-time
+                            example: "2025-11-08T12:55:54.644752+00:00"
+                          user_id:
+                            type: string
+                            example: ac0d2c0d-610e-45c3-9752-520bd0108e45
+                          whitelisted:
+                            type: boolean
+                            example: false
+                          code_redeemed:
+                            type: string
+                            nullable: true
+                            example: null
+                          phone_verified:
+                            type: boolean
+                            example: false
+                          email_verified:
+                            type: boolean
+                            example: false
+                          kyc_verified:
+                            type: boolean
+                            example: false
+                          personal_data:
+                            type: object
+                            nullable: true
+                            example: null
+                          billing_data:
+                            type: object
+                            nullable: true
+                            example: null
+                          order_data:
+                            type: object
+                            nullable: true
+                            example: null
+                          card_issued:
+                            type: boolean
+                            example: false
+                          card_issued_on:
+                            type: string
+                            nullable: true
+                            example: null
+                          card_id:
+                            type: string
+                            nullable: true
+                            example: null
+                          kyc_status:
+                            type: string
+                            nullable: true
+                            example: null
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/ServerError"
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
-  /card/issue_card:
+  /card/quote:
     post:
+      operationId: quoteCard
+      summary: Quote card issuance price
+      description: >
+        Returns the price that will be charged when the card is issued. Purely informational —
+        no funds move. `type` (form factor) defaults to `physical`, so it must be supplied
+        explicitly to quote a virtual card. Unsupported bin / form factor combinations are
+        rejected with 400 (the catalog is the source of truth and is fail-closed).
       tags:
-        - Cards
-      summary: Issue a card
-      operationId: issueCard
-      description: |
-        Issues a new card for the user. On success a [`card.issued`](#tag/webhooks)
-        webhook is delivered to your registered `webhook_url`.
-
-        Pass an `Idempotency-Key` to safely retry without double-issuing.
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
+        - Card Service
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required:
-                - userId
-                - type
+              required: [userId]
               properties:
                 userId:
                   type: string
                   format: uuid
-                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                  example: "04610acd-01da-4d4d-982f-d12de7dac529"
                 type:
                   type: string
-                  description: Type of card to issue.
+                  description: Form factor to quote. Defaults to `physical` when omitted.
+                  enum:
+                    - virtual
+                    - physical
+                  example: virtual
+                bin:
+                  type: string
+                  description: >
+                    Card BIN to quote. Must exist in the Pay3 card BIN catalog and support the
+                    requested form factor. Sandbox values — `537100` (Mastercard, virtual),
+                    `45492418` (Visa Pay3 Card, virtual), `49387519` (Visa White Card, physical).
+                    Omitted: the first BIN that supports the requested form factor.
+                  example: "45492418"
+                country:
+                  type: string
+                  description: Destination country. Physical cards only; returns the shipping estimate above baseline.
+                  example: JP
+      responses:
+        "200":
+          description: Quote generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Quote generated"
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    properties:
+                      bin: { type: string, example: "45492418" }
+                      form_factor: { type: string, example: virtual }
+                      country: { type: string, nullable: true }
+                      currency: { type: string, example: USD }
+                      price:
+                        type: string
+                        description: Customer-facing price (USD, fixed 2 decimals).
+                        pattern: '^\d+\.\d{2}$'
+                        example: "5.00"
+                      estimated_shipping:
+                        type: string
+                        nullable: true
+                        description: >
+                          Shipping estimate above the baseline, same fixed 2 decimal format.
+                          `null` when it does not apply (virtual cards, or `country` omitted) —
+                          `null` means "not applicable", not "free".
+                        pattern: '^\d+\.\d{2}$'
+                        example: null
+                      total:
+                        type: string
+                        description: Amount actually charged at issuance (USD, fixed 2 decimals).
+                        pattern: '^\d+\.\d{2}$'
+                        example: "5.00"
+              example:
+                message: "Quote generated"
+                data:
+                  bin: "45492418"
+                  form_factor: virtual
+                  country: null
+                  currency: USD
+                  price: "5.00"
+                  estimated_shipping: null
+                  total: "5.00"
+                code: 0
+        "400":
+          description: Unsupported card bin / form factor combination
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /card/issue_card:
+    post:
+      operationId: issueCard
+      summary: Issue new card
+      description: Issues a new virtual card for a given user.
+      tags:
+        - Card Service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId:
+                  type: string
+                  format: uuid
+                  example: "04610acd-01da-4d4d-982f-d12de7dac529"
+                type:
+                  type: string
+                  description: Type of card to issue
                   enum:
                     - virtual
                     - physical
                   example: virtual
                 amount:
                   type: number
-                  description: |
-                    Optional balance (in USD) to load onto the card at issuance.
-                    Defaults to `0`, in which case the issuance fee is covered by your
-                    master account and no extra balance is preloaded. This is a funding
-                    amount, not the card price.
-                  default: 0
+                  description: >
+                    Optional top-up loaded onto the user balance at issuance (default 0).
+                    This is NOT the issuance price — pricing is managed by Pay3.
                   example: 0
+                bin:
+                  type: string
+                  description: >
+                    Optional card BIN to issue. Must exist in the Pay3 card BIN catalog and
+                    support the requested form factor. Sandbox values — `537100` (Mastercard,
+                    virtual), `45492418` (Visa Pay3 Card, virtual), `49387519` (Visa White Card,
+                    physical). Omitted: the first BIN that supports the requested form factor
+                    (`537100` for virtual in sandbox). Unknown / disabled / form-factor-mismatched
+                    BINs are rejected with 400; BINs not permitted for the account with 403.
+                  example: "45492418"
       responses:
         "200":
-          description: Card issued successfully.
+          description: Card issued successfully
           content:
             application/json:
               schema:
@@ -497,44 +991,143 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: Card issued successfully
+                    example: "Card issued successfully"
                   code:
                     type: integer
                     example: 0
                   data:
-                    $ref: "#/components/schemas/Card"
+                    type: object
+                    description: >
+                      Whitelisted card summary. These four fields are the entire response —
+                      the card platform's raw payload is never passed through (no PAN, CVV,
+                      expiry, billing address, email, or internal identifiers).
+                    additionalProperties: false
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                        description: Card ID. Same value as `cardId` in the `card.issued` webhook.
+                        example: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
+                      cardType:
+                        type: string
+                        enum: [virtual, physical]
+                        example: virtual
+                      status:
+                        type: string
+                        enum: [active, issued, shipped, activated, frozen]
+                        example: active
+                      last4:
+                        type: string
+                        description: Last four digits of the card number.
+                        example: "9924"
+                example:
+                  message: "Card issued successfully"
+                  code: 0
+                  data:
+                    id: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
+                    cardType: virtual
+                    status: active
+                    last4: "9924"
+
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: >
+            Invalid request — an unknown / disabled / form-factor-mismatched `bin`, **or the user
+            balance is below the issuance price (pre-flight rejection)**. In the balance case the
+            request is refused *before* issuance starts, so **no card is created**. Top up and
+            retry with a new `Idempotency-Key`. Do not hard-code the required amount: branch on
+            `status` / `code` (the price and the card platform's internal fees are Pay3-side
+            configuration and differ between sandbox and production).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: "Not enough balance to issue card"
+                code: 400
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "402":
+          description: >
+            The balance ran out **mid-issuance** — the card had already been created at the card
+            platform and the price could not be collected. Pay3 closes (voids) the card it had just
+            created, so a failed attempt never leaves a card behind and `card_issued` stays false.
+            This is a **different case from 400**: 400 means the request was refused before any card
+            existed. Top up and retry with a new `Idempotency-Key`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: "Not enough balance to issue card. The issuance was rolled back and no card was created."
+                code: 402
+        "403":
+          description: >
+            Issuance refused. **Two distinct cases — distinguish them by `message`**:
+
+            1. `This card is not available for your account` — the requested `bin` is not
+               permitted for this account. Retry with a permitted BIN.
+            2. `Card limit reached for your account` / `Card limit reached for this card type`
+               — the **card count limit** has been reached. The default is 1 virtual and
+               1 physical card per user, but this is a Pay3-side safety limit and a
+               **default value that may change** (it can also be configured per client).
+               Do **not** hard-code the count: branch on `message`. Changing the `bin`
+               does not clear this error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                binNotPermitted:
+                  summary: BIN not permitted for this account
+                  value:
+                    message: "This card is not available for your account"
+                    code: 403
+                cardLimitReached:
+                  summary: Card count limit reached
+                  value:
+                    message: "Card limit reached for this card type"
+                    code: 403
         "409":
-          $ref: "#/components/responses/IdempotencyConflict"
-        "500":
-          $ref: "#/components/responses/ServerError"
+          description: >
+            Issuance finished without producing a card. In almost all cases the account/card-platform
+            setup has not finished yet — `kyc/submit` only **starts** that setup asynchronously, so
+            calling issuance before it completes lands in this window. **No card is created and no
+            `card.issued` webhook is sent.** Confirm setup has completed (`GET /users/{userId}` →
+            `kycStatus` / `cards`, or the `user.kyc.updated` webhook) and retry with a new
+            `Idempotency-Key`. Contact Pay3 if it keeps returning 409.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: "Card issuance did not complete: no card was created. The account is not ready to be issued a card yet — retry with a new Idempotency-Key once the account setup has finished."
+                code: 409
 
   /card/fetch_cards:
     post:
-      tags:
-        - Cards
-      summary: List the user's cards
       operationId: fetchCards
-      description: Returns all cards associated with the user.
+      summary: Fetch all cards for a user
+      description: Returns a list of virtual cards associated with the given user.
+      tags:
+        - Card Service
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required:
-                - userId
               properties:
                 userId:
                   type: string
                   format: uuid
-                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                  example: "04610acd-01da-4d4d-982f-d12de7dac529"
       responses:
         "200":
-          description: Cards fetched successfully.
+          description: Cards fetched successfully
           content:
             application/json:
               schema:
@@ -542,28 +1135,86 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: Cards fetched successfully
+                    example: "Cards info fetched successfully"
                   code:
                     type: integer
                     example: 0
                   data:
                     type: array
+                    description: >
+                      Whitelisted card summaries. These six fields are the entire response —
+                      the card platform's raw payload, internal identifiers (account/budget/
+                      cardholder/balance ids), billing address, email, and pricing/feature
+                      flags are never passed through.
                     items:
-                      $ref: "#/components/schemas/Card"
+                      type: object
+                      additionalProperties: false
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                          example: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
+                        cardType:
+                          type: string
+                          enum: [virtual, physical]
+                          example: virtual
+                        status:
+                          type: string
+                          enum: [active, issued, shipped, activated, frozen]
+                          example: active
+                        last4:
+                          type: string
+                          description: Last four digits of the card number.
+                          example: "9924"
+                        currency:
+                          type: string
+                          nullable: true
+                          example: "USD"
+                        balance:
+                          type: string
+                          nullable: true
+                          description: >
+                            Card balance as a fixed 2-decimal string (same notation as every
+                            other money field). `null` when unavailable — it is never rounded
+                            to "0.00", so a zero balance stays distinguishable from a missing one.
+                          example: "2.60"
+                example:
+                  message: "Cards fetched successfully"
+                  code: 0
+                  data:
+                    - id: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
+                      cardType: virtual
+                      status: active
+                      last4: "9924"
+                      currency: "USD"
+                      balance: "2.60"
+
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /card/fetch_card_details:
     post:
-      tags:
-        - Cards
-      summary: Fetch full card details
       operationId: fetchCardDetails
-      description: |
-        Returns sensitive card details (full PAN, CVV, and expiry) for a single card.
-        Only surface these values over a secure channel, and never log them.
+      summary: Fetch card details
+      description: >-
+        Card number, CVV and expiry are never returned across the partner boundary.
+        This endpoint requires a two-factor step-up credential (PCI); tokens issued through the
+        partner OAuth flow do not carry one, so partner integrations receive `401` here.
+        For card type, status and the last four digits use `POST /card/fetch_cards`
+        or `GET /users/{userId}`.
+      tags:
+        - Card Service
       requestBody:
         required: true
         content:
@@ -577,14 +1228,14 @@ paths:
                 userId:
                   type: string
                   format: uuid
-                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                  example: "04610acd-01da-4d4d-982f-d12de7dac529"
                 cardId:
                   type: string
                   format: uuid
-                  example: cee34fdd-51cc-49bd-b71a-d6bc0653bb34
+                  example: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
       responses:
         "200":
-          description: Card details fetched successfully.
+          description: Card details fetched successfully
           content:
             application/json:
               schema:
@@ -592,47 +1243,38 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: Card details fetched successfully
+                    example: "Card details fetched successfully"
                   code:
                     type: integer
                     example: 0
                   data:
                     type: object
-                    properties:
-                      cardNo:
-                        type: string
-                        description: Full card number (PAN).
-                        example: "5371000000002362"
-                      cvv:
-                        type: string
-                        example: "380"
-                      expMonth:
-                        type: string
-                        example: "07"
-                      expYear:
-                        type: string
-                        example: "2028"
+                    description: >-
+                      Always empty. No card detail field is promised on the partner boundary.
+                    additionalProperties: false
+                    example: {}
+
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /card/fetch_deposit_address:
     post:
-      tags:
-        - Cards
-      summary: Fetch a crypto deposit address
       operationId: fetchDepositAddress
-      description: |
-        Returns the deposit address for funding the user's card balance with the given
-        token on the given network. Funds sent to this address are credited to the
-        user's account.
-
-        Supported networks depend on the token (and your partner configuration):
-          - **USDT**: TRX, TON, AVAX, ETH, SOL, BNB
-          - **USDC**: OP, MATIC
-
-        Contact Pay3 to confirm the current token/network matrix for your account.
+      summary: Fetch crypto deposit address
+      description: Retrieves the deposit address for a given user, token, and network combination.
+      tags:
+        - Card Service
       requestBody:
         required: true
         content:
@@ -647,18 +1289,22 @@ paths:
                 userId:
                   type: string
                   format: uuid
-                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                  example: "04610acd-01da-4d4d-982f-d12de7dac529"
                 token:
                   type: string
                   enum: [USDT, USDC]
-                  example: USDT
+                  example: "USDT"
                 network:
                   type: string
                   enum: [TRX, TON, AVAX, ETH, SOL, BNB, OP, MATIC]
-                  example: TRX
+                  example: "TRX"
+              description: >
+                The network options vary depending on the token:
+                  - For **USDT**: TRX, TON, AVAX, ETH, SOL, BNB
+                  - For **USDC**: OP, MATIC
       responses:
         "200":
-          description: Address fetched successfully.
+          description: Address fetched successfully
           content:
             application/json:
               schema:
@@ -666,7 +1312,7 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: Address fetched successfully
+                    example: "Address fetched successfully"
                   code:
                     type: integer
                     example: 0
@@ -675,28 +1321,29 @@ paths:
                     properties:
                       address:
                         type: string
-                        description: Deposit address for the requested token/network.
-                        example: TYDzsbVxNkE9oF7g2pQ3rWm5n8kLpJ4hQs
+                        example: "TUp8HBKRboDH3SZFFFs2qA6iNDCGnzz3bH"
+
         "400":
-          description: Invalid parameters or unsupported token/network combination.
+          description: Invalid parameters or unsupported token-network combination
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/ServerError"
 
-  /card/set_card_pin:
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /cards/set-atm-pin:
     post:
       tags:
-        - Cards
-      summary: Set the card PIN
+        - Card Service
+      summary: Set ATM card PIN
+      description: Sets or updates the ATM PIN for a user's card and activates the card if it is not activated.
       operationId: setCardPin
-      description: |
-        Sets or updates the ATM PIN for a card, activating the card if it is not yet
-        active. Physical cards only.
       requestBody:
         required: true
         content:
@@ -704,161 +1351,22 @@ paths:
             schema:
               type: object
               required:
-                - userId
-                - cardId
                 - pin
+                - cardId
               properties:
-                userId:
-                  type: string
-                  format: uuid
-                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
-                cardId:
-                  type: string
-                  format: uuid
-                  example: cee34fdd-51cc-49bd-b71a-d6bc0653bb34
                 pin:
                   type: string
-                  description: 6-digit ATM PIN.
+                  description: 6-digit ATM PIN
+                  example: "123456"
                   minLength: 6
                   maxLength: 6
-                  example: "123456"
-      responses:
-        "200":
-          description: Card PIN set successfully.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SimpleSuccess"
-              example:
-                message: Card pin set successfully
-                code: 0
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/ServerError"
-
-  /card/lock_card:
-    post:
-      tags:
-        - Cards
-      summary: Lock a card
-      operationId: lockCard
-      description: Locks a card to block further transactions.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - userId
-                - cardId
-              properties:
-                userId:
-                  type: string
-                  format: uuid
-                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
                 cardId:
                   type: string
                   format: uuid
-                  example: cee34fdd-51cc-49bd-b71a-d6bc0653bb34
+                  example: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
       responses:
         "200":
-          description: Card locked successfully.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SimpleSuccess"
-              example:
-                message: Card locked successfully
-                code: 0
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/ServerError"
-
-  /card/unlock_card:
-    post:
-      tags:
-        - Cards
-      summary: Unlock a card
-      operationId: unlockCard
-      description: Unlocks a previously locked card so transactions can resume.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - userId
-                - cardId
-              properties:
-                userId:
-                  type: string
-                  format: uuid
-                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
-                cardId:
-                  type: string
-                  format: uuid
-                  example: cee34fdd-51cc-49bd-b71a-d6bc0653bb34
-      responses:
-        "200":
-          description: Card unlocked successfully.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SimpleSuccess"
-              example:
-                message: Card unlocked successfully
-                code: 0
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/ServerError"
-
-  /card/fetch_transactions:
-    post:
-      tags:
-        - Cards
-      summary: List card transactions
-      operationId: fetchTransactions
-      description: Returns the user's card transactions, paginated.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - userId
-                - page
-                - limit
-              properties:
-                userId:
-                  type: string
-                  format: uuid
-                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
-                page:
-                  type: integer
-                  minimum: 1
-                  description: Page number (1-based).
-                  example: 1
-                limit:
-                  type: integer
-                  minimum: 1
-                  maximum: 100
-                  description: Number of transactions per page.
-                  example: 10
-      responses:
-        "200":
-          description: Transactions fetched successfully.
+          description: Card PIN set successfully
           content:
             application/json:
               schema:
@@ -866,133 +1374,1245 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: Transactions fetched successfully
+                    example: "Card pin set successfully"
                   code:
                     type: integer
                     example: 0
-                  transactions:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/Transaction"
+
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: Invalid parameters or unsupported token-network combination
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
         "500":
-          $ref: "#/components/responses/ServerError"
+          description: External API or internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: Failed to set card pin
+                code: 500
+
+  /cards/lock:
+    post:
+      tags:
+        - Card Service
+      summary: Lock card
+      description: Locks a user's card to prevent further transactions.
+      operationId: lockCard
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - cardId
+              properties:
+                cardId:
+                  type: string
+                  format: uuid
+                  description: Unique identifier of the card
+                  example: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
+
+      responses:
+        "200":
+          description: Card locked successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Card locked successfully"
+                  code:
+                    type: integer
+                    example: 0
+
+        "400":
+          description: Invalid parameters or unsupported token-network combination
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+        "500":
+          description: External API or internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: Failed to lock card
+                code: 500
+
+  /cards/unlock:
+    post:
+      tags:
+        - Card Service
+      summary: Unlock card
+      description: Unlocks a previously locked card and allows transactions to resume.
+      operationId: unlockCard
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - cardId
+              properties:
+                cardId:
+                  type: string
+                  format: uuid
+                  description: Unique identifier of the card
+                  example: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
+
+      responses:
+        "200":
+          description: Card unlocked successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Card unlocked successfully"
+                  code:
+                    type: integer
+                    example: 0
+
+        "400":
+          description: Invalid parameters or unsupported operation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+        "500":
+          description: External API or internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: Failed to unlock card
+                code: 500
+
+  /cards/transactions:
+      post:
+        tags:
+          - Card Service
+        summary: Fetch card transactions
+        description: Fetches paginated card transactions for a user.
+        operationId: fetchTransactions
+
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - page
+                  - limit
+                properties:
+                  page:
+                    type: integer
+                    minimum: 1
+                    example: 1
+                    description: Page number for pagination
+                  limit:
+                    type: integer
+                    minimum: 1
+                    maximum: 100
+                    example: 10
+                    description: Number of transactions per page
+
+        responses:
+          "200":
+            description: Transactions fetched successfully
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    message:
+                      type: string
+                      example: "Transactions fetched successfully"
+                    transactions:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          transactionId:
+                            type: string
+                            example: "txn_123456"
+                          amount:
+                            type: number
+                            format: float
+                            example: 120.75
+                          currency:
+                            type: string
+                            example: "USD"
+                          status:
+                            type: string
+                            example: "COMPLETED"
+                          merchantName:
+                            type: string
+                            example: "Amazon"
+                          transactionDate:
+                            type: string
+                            format: date-time
+                            example: "2025-07-20T14:32:11.000Z"
+                    code:
+                      type: integer
+                      example: 0
+
+          "400":
+            description: Invalid pagination parameters
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/ErrorResponse"
+
+          "401":
+            description: Unauthorized
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/ErrorResponse"
+
+          "500":
+            description: External API or internal server error
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/ErrorResponse"
+                example:
+                  message: Failed to fetch transactions
+                  code: 500
+
 
   /card/issuance_events:
     post:
       tags:
-        - Cards
+        - Card Service
       summary: Fetch card issuance progress events
+      description: >
+        Returns provider-neutral card issuance progress events for a user
+        (validating, provider_call, db_committed, card_fetched, funds_settled,
+        shipping_requested, done; or failed). Use this to drive a loading /
+        status UI after calling issue_card.
       operationId: fetchIssuanceEvents
-      description: |
-        Returns the provisioning/issuance progress events for the user, in order. Poll
-        this right after `issue_card` to drive a loading/status UI. The terminal phases
-        are `done` (success) and `failed`.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required:
-                - userId
+              required: [userId]
               properties:
-                userId:
-                  type: string
-                  format: uuid
-                  example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
-                applicationId:
-                  type: string
-                  format: uuid
-                  description: Optional — only events for this card application.
-                  example: 94655d78-71a8-43a5-9654-7c5996ee51c3
-                since:
-                  type: string
-                  format: date-time
-                  description: Optional — only events created after this ISO 8601 timestamp.
-                  example: "2025-11-08T12:55:54.644Z"
+                userId: { type: string, format: uuid }
+                applicationId: { type: string, format: uuid }
+                since: { type: string, format: date-time }
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "200":
-          description: Issuance events fetched successfully.
+          description: Issuance events
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  message:
-                    type: string
-                    example: Issuance events fetched successfully
-                  code:
-                    type: integer
-                    example: 0
+                  message: { type: string }
+                  code: { type: integer, example: 0 }
                   data:
                     type: object
                     properties:
                       events:
                         type: array
                         items:
-                          $ref: "#/components/schemas/IssuanceEvent"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/ServerError"
+                          type: object
+                          properties:
+                            phase: { type: string }
+                            meta: { type: object }
+                            created_at: { type: string, format: date-time }
+                            application_id: { type: string, format: uuid }
 
-webhooks:
-  card.issued:
+  /pool/balance:
+    get:
+      tags:
+        - Pool
+      summary: Read the partner pool balance (spec §4.3)
+      operationId: getPoolBalance
+      description: |
+        Current balance of the calling partner's pool. `available` is what a charge
+        instruction can draw on: `balance` minus `pendingTransfers` (amounts already
+        reserved by accepted-but-not-yet-settled instructions).
+
+        All amounts are fixed 2-decimal **strings**.
+
+        **This endpoint takes no query parameters.** Any parameter returns `400`
+        (`Unknown query parameter "...". Accepted: (none)`) instead of being ignored —
+        a dropped `?to=` would otherwise read as "the balance as of that date".
+        For a balance at a past point in time use `balanceAfter` in `GET /pool/ledger`.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [balance, pendingTransfers, available, currency]
+                properties:
+                  balance: { type: string, example: "995.00" }
+                  pendingTransfers: { type: string, example: "0.00" }
+                  available: { type: string, example: "995.00" }
+                  currency: { type: string, example: "USD" }
+        "400":
+          description: A query parameter was supplied (this endpoint accepts none)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: No pool account has been opened for this client yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pool/deposit_address:
+    get:
+      tags:
+        - Pool
+      summary: Read the pool deposit address (spec §5)
+      operationId: getPoolDepositAddress
+      description: |
+        Address to fund the pool from, plus the deposit fee rate applied on arrival
+        (`feeRate`, fixed 4-decimal string).
+
+        **Sandbox**: the address is a placeholder — prefix `0xSANDBOX_` with
+        `network: "SANDBOX"`. Nothing sent to it arrives anywhere. `currency` still
+        reads `"USDT"`, so a sandbox check must test **`network`**, not `currency`.
+        A real address is issued for production only, after Pay3 confirms the
+        receiving account.
+
+        Returns `409` when no deposit address has been issued for the pool.
+
+        **This endpoint takes no query parameters.** Any parameter returns `400`
+        (`Unknown query parameter "...". Accepted: (none)`) instead of being ignored —
+        a dropped `?network=TRON` would otherwise read as "the TRON address", while the
+        response is always the single address registered for the pool.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [address, network, currency, feeRate]
+                properties:
+                  address: { type: string, example: "0xSANDBOX_11481a92916e4babae9cc4afa2814fd6" }
+                  network: { type: string, example: "SANDBOX" }
+                  currency: { type: string, example: "USDT" }
+                  feeRate: { type: string, example: "0.0050" }
+        "400":
+          description: A query parameter was supplied (this endpoint accepts none)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: No deposit address has been issued for this pool
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pool/transfer:
     post:
       tags:
-        - Webhooks
-      summary: card.issued
-      operationId: cardIssuedWebhook
+        - Pool
+      summary: Instruct a charge from the pool to a user (spec §4.1)
+      operationId: createPoolTransfer
       description: |
-        Delivered to your registered `webhook_url` when a card is issued.
+        Draws `amount` from the partner pool and loads it onto the user's card
+        balance. Accepted instructions return `202` with `status: "pending"` and
+        settle asynchronously — poll `GET /pool/transfer/{transferId}`.
 
-        **Headers**
-        - `X-Pay3-Signature`: `hex(HMAC_SHA256(webhook_secret, rawBody))` — verify with your shared secret.
-        - `X-Pay3-Event`: the event type (e.g. `card.issued`).
-        - `X-Pay3-Delivery`: delivery ID — use it to dedupe retries.
+        **Always send `Idempotency-Key`.** Re-sending the same key replays the
+        **first** response verbatim (so an already-settled instruction still
+        replays `"pending"`); the same key with a different body returns `409`.
 
-        **Retries**: non-`2xx` responses are retried with exponential backoff
-        (30s, 60s, 120s … up to 1h, max 6 attempts). Respond `2xx` quickly and dedupe
-        on `X-Pay3-Delivery`.
+        Rejections carry a `transferId` too — the instruction is recorded with its
+        reason and can be read back via `GET /pool/transfer/{transferId}`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [userId, amount]
               properties:
-                id:
+                userId:
                   type: string
-                  description: Delivery ID (matches the `X-Pay3-Delivery` header).
-                  example: 7c5996ee-51c3-43a5-9654-94655d7871a8
-                type:
-                  type: string
-                  example: card.issued
-                created_at:
-                  type: string
-                  format: date-time
-                  example: "2025-11-08T12:56:10.120Z"
-                data:
-                  type: object
-                  description: Event-specific payload.
-                  properties:
-                    userId:
-                      type: string
-                      format: uuid
-                      example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
-                    type:
-                      type: string
-                      example: virtual
-                    card:
-                      $ref: "#/components/schemas/Card"
+                  description: >
+                    Pay3 user id (uuid). The user must belong to the calling partner —
+                    either registered through `POST /users/register` or attributed by a
+                    referral code.
+                amount: { type: string, example: "10.00" }
+                currency: { type: string, enum: [USD], default: USD }
+      responses:
+        "202":
+          description: Instruction accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transferId: { type: string, example: "pt_9f0c..." }
+                  status: { type: string, enum: [pending] }
+                  amount: { type: string, example: "10.00" }
+        "402":
+          description: Insufficient pool balance (recorded as `rejected`; body carries `transferId`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Unknown user for this partner (recorded as `rejected`; body carries `transferId`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Same `Idempotency-Key` replayed with a different body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "412":
+          description: User KYC is not approved (recorded as `rejected`; body carries `transferId`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: No settlement mode is configured for this client. Pay3 sets it; partners cannot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pool/transfer/{transferId}:
+    get:
+      tags:
+        - Pool
+      summary: Read one charge instruction (spec §4.2)
+      operationId: getPoolTransfer
+      description: |
+        Current state of a single instruction. This — not the idempotent replay of
+        `POST /pool/transfer` — is how to observe `pending → settled | failed`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: transferId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "pt_9f0c..."
       responses:
         "200":
-          description: Acknowledged. Return any `2xx` to confirm receipt.
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transferId: { type: string }
+                  userId: { type: string, nullable: true }
+                  amount: { type: string, example: "10.00" }
+                  status: { type: string, enum: [pending, settled, failed, rejected] }
+                  reason: { type: string, nullable: true }
+                  settlementMode:
+                    type: string
+                    nullable: true
+                    enum: [simulate]
+                  createdAt: { type: string, format: date-time }
+                  settledAt: { type: string, format: date-time, nullable: true }
+                  failedAt: { type: string, format: date-time, nullable: true }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Unknown instruction for this partner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pool/transfers:
+    get:
+      tags:
+        - Pool
+      summary: List charge instructions (spec §4.2 / §10-2)
+      operationId: listPoolTransfers
+      description: |
+        Lists the calling partner's charge instructions, newest `createdAt` first.
+
+        `from` / `to` filter on **`createdAt` (the time the instruction was
+        accepted)**, not `settledAt`. The pool ledger records its `transfer` row
+        at acceptance time too, so passing the same `from` / `to` to
+        `GET /pool/ledger` selects the matching interval.
+
+        **Unknown query parameters return `400`** and the error body lists the
+        accepted names (`status, userId, from, to, limit, offset`). Names are
+        case-sensitive.
+
+        **Filter values are validated too.** `userId` must be a uuid and `status`
+        must be one of the four values below; anything else returns `400` rather
+        than an empty `200` — so a typo is never indistinguishable from "no rows".
+        A well-formed uuid that is not attributed to the caller returns `200` with
+        `"total": 0`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { $ref: "#/components/parameters/ListLimit" }
+        - { $ref: "#/components/parameters/ListOffset" }
+        - { $ref: "#/components/parameters/ListFrom" }
+        - { $ref: "#/components/parameters/ListTo" }
+        - name: status
+          in: query
+          required: false
+          description: |
+            Out-of-vocabulary values return `400`
+            (`status must be one of: pending, settled, failed, rejected`).
+          schema:
+            type: string
+            enum: [pending, settled, failed, rejected]
+        - name: userId
+          in: query
+          required: false
+          description: |
+            Non-uuid values return `400`
+            (`userId must be a uuid (e.g. "3f8c1e2a-5b47-4d9e-8a10-2c6b7d0e4f51")`).
+
+            Matches both attributed instructions and instructions that were
+            **rejected with `unknown_user`** (which carry the requested id rather
+            than an attributed Pay3 user). The `userId` shown in this list, in
+            `GET /pool/transfer/{transferId}` and in the partner console is
+            therefore always a value you can filter by.
+          schema:
+            type: string
+            format: uuid
+            example: "3f8c1e2a-5b47-4d9e-8a10-2c6b7d0e4f51"
+      responses:
+        "200":
+          description: Successful operation. An empty `data` array is not an error.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, paging]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        transferId: { type: string, example: "pt_9f0c..." }
+                        userId: { type: string }
+                        amount: { type: string, example: "100.00" }
+                        status: { type: string, enum: [pending, settled, failed, rejected] }
+                        reason: { type: string, nullable: true }
+                        settlementMode:
+                          type: string
+                          nullable: true
+                          enum: [simulate]
+                        createdAt: { type: string, format: date-time }
+                        settledAt: { type: string, format: date-time, nullable: true }
+                        failedAt: { type: string, format: date-time, nullable: true }
+                  paging: { $ref: "#/components/schemas/Paging" }
+        "400":
+          description: Invalid or unknown query parameter, or an invalid `userId` / `status` value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pool/ledger:
+    get:
+      tags:
+        - Pool
+      summary: List pool balance movements (spec §5)
+      operationId: listPoolLedger
+      description: |
+        Lists every movement of the partner's pool balance, newest `createdAt`
+        first. `balanceAfter` is the running balance immediately after the row.
+
+        **Unknown query parameters return `400`** and the error body lists the
+        accepted names (`type, from, to, limit, offset`). Names are case-sensitive.
+
+        **Filter values are validated too.** `type` must be one of the six values
+        below; anything else returns `400` rather than an empty `200` — so a typo
+        is never indistinguishable from "no rows". Note that the partner console
+        labels `transfer` rows "チャージ" in Japanese, so `?type=charge` is a
+        natural thing to write and is rejected with `400`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { $ref: "#/components/parameters/ListLimit" }
+        - { $ref: "#/components/parameters/ListOffset" }
+        - { $ref: "#/components/parameters/ListFrom" }
+        - { $ref: "#/components/parameters/ListTo" }
+        - name: type
+          in: query
+          required: false
+          description: |
+            Out-of-vocabulary values return `400`
+            (`type must be one of: deposit, fee, transfer, refund, withdrawal, adjustment`).
+            One value per request — comma-separated lists are not accepted.
+          schema:
+            type: string
+            enum: [deposit, fee, transfer, refund, withdrawal, adjustment]
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, paging]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        type:
+                          type: string
+                          enum: [deposit, fee, transfer, refund, withdrawal, adjustment]
+                        amount: { type: string, example: "-50.00" }
+                        balanceAfter: { type: string, example: "9950.00" }
+                        referenceId: { type: string, nullable: true }
+                        metadata:
+                          type: object
+                          nullable: true
+                          description: |
+                            Free-form per-row detail. `fee` rows carry the rate used,
+                            as a fixed 4-decimal **string** (`{"rate": "0.0050"}`),
+                            matching `feeRate` from `GET /pool/deposit_address`.
+                        createdAt: { type: string, format: date-time }
+                  paging: { $ref: "#/components/schemas/Paging" }
+        "400":
+          description: Invalid or unknown query parameter, or an invalid `type` value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /referral-codes:
+    get:
+      tags:
+        - Referral codes
+      summary: List the partner's referral codes (spec §7)
+      operationId: listReferralCodes
+      description: |
+        Returns **all** of the partner's referral codes, newest first. There is no
+        paging and no filtering.
+
+        **This endpoint accepts no query parameters.** Any parameter returns `400`
+        with `Accepted: (none)` — a filter that looks applied but is not would be
+        read as "there are only these codes".
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        code: { type: string, example: "PARTNER-A" }
+                        enabled: { type: boolean }
+                        label: { type: string, nullable: true }
+                        link:
+                          type: string
+                          example: "https://app.pay-3.io/?ref=PARTNER-A"
+                        createdAt: { type: string, format: date-time }
+                        updatedAt: { type: string, format: date-time }
+        "400":
+          description: Unknown query parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    post:
+      tags:
+        - Referral codes
+      summary: Register a referral code (spec §7)
+      operationId: createReferralCode
+      description: |
+        Codes are matched **case-insensitively** and registered first-come,
+        first-served across all partners, so a code already taken returns `409`.
+
+        Format: 3–64 characters of `A-Z a-z 0-9 - _`. Anything else is `400`.
+
+        There is no rename: to correct a code, delete it and create a new one.
+        Attribution is fixed at signup time, so deleting a code never rewrites
+        the users already attributed through it.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, example: "PARTNER-A" }
+                label:
+                  type: string
+                  nullable: true
+                  description: Free-form note for your own use. Not shown to end users.
+      responses:
+        "201":
+          description: Code registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReferralCode"
+        "400":
+          description: Invalid code format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Code already taken (by you or another partner)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /referral-codes/{code}:
+    patch:
+      tags:
+        - Referral codes
+      summary: Enable or disable a referral code (spec §7)
+      operationId: updateReferralCode
+      description: |
+        `enabled` is the only mutable field. A disabled code stops attributing new
+        signups; users already attributed keep their attribution.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { $ref: "#/components/parameters/ReferralCodePath" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReferralCode"
+        "404":
+          description: No such code for this partner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      tags:
+        - Referral codes
+      summary: Delete a referral code (spec §7)
+      operationId: deleteReferralCode
+      description: |
+        Deletes exactly one code, matched case-insensitively. Wildcard characters
+        carry no meaning here — `DELETE /referral-codes/%` is a `404`, not a bulk
+        delete. Users already attributed through the code keep their attribution.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { $ref: "#/components/parameters/ReferralCodePath" }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string }
+                  deleted: { type: boolean, enum: [true] }
+        "404":
+          description: No such code for this partner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+
+  /developer:
+    get:
+      tags:
+        - Developer
+      summary: Developer settings summary (your own client)
+      operationId: getDeveloperSummary
+      description: |
+        Everything the partner console's "Developer" menu shows, for the calling client only
+        (scope `client:manage`). API keys are **masked**; signing keys are never included.
+        `webhook.events` = `null` means the endpoint subscribes to every event.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  clientName: { type: string, example: "Partner A" }
+                  clientId: { type: string, example: "client_0123456789abcdef0123456789abcdef" }
+                  apiKeys:
+                    type: array
+                    items: { $ref: "#/components/schemas/ApiKey" }
+                  webhook: { $ref: "#/components/schemas/WebhookSettings" }
+                  ipAllowlist:
+                    type: array
+                    items: { type: string }
+                    example: ["203.0.113.10", "198.51.100.0/24"]
+                  ipAllowlistRequired:
+                    type: boolean
+                    description: When `true`, API-key calls are rejected with 403 `ip_not_registered` until at least one IP is registered. Console access is never subject to the allowlist.
+                  docsUrl: { type: string, example: "https://developer.pay-3.io/" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /developer/api-keys:
+    get:
+      tags:
+        - Developer
+      summary: List API keys (masked)
+      operationId: listApiKeys
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ApiKey" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags:
+        - Developer
+      summary: Issue a new API key
+      operationId: createApiKey
+      description: |
+        Issues a new key (`pay3_sk_test_…` on sandbox, `pay3_sk_live_…` on production).
+        **The plaintext `key` is returned only in this response** — Pay3 does not store it.
+        Up to 10 active keys per client (409 beyond that). Keep several keys and switch over at your own pace.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64, example: "production backend" }
+      responses:
+        "201":
+          description: Key issued
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiKey"
+                  - type: object
+                    properties:
+                      key:
+                        type: string
+                        description: Plaintext key. Shown once.
+                        example: "pay3_sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Too many active keys (limit 10)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /developer/api-keys/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Key id from the list. Keys issued before 2026-09-18 are addressed as `legacy`.
+        schema: { type: string }
+    patch:
+      tags:
+        - Developer
+      summary: Rename an API key
+      operationId: renameApiKey
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64 }
+      responses:
+        "200":
+          description: Renamed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKey"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags:
+        - Developer
+      summary: Revoke an API key (immediate, irreversible)
+      operationId: revokeApiKey
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKey"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /developer/webhook:
+    put:
+      tags:
+        - Developer
+      summary: Register, change, or clear the webhook endpoint
+      operationId: setWebhook
+      description: |
+        `url` must be an absolute `https://` URL (localhost and URLs with credentials are rejected with 400).
+        `events` is a subset of `availableEvents` (omit = subscribe to all; an empty array is 400).
+        `description` is free text up to 120 characters. `url: null` clears the endpoint together with
+        its description and subscription. If no signing key exists yet, one is issued and returned
+        **once** in `secretIssued`; otherwise `secretIssued` is `null`.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, nullable: true, example: "https://api.example.com/webhooks/pay3" }
+                description: { type: string, nullable: true, maxLength: 120, example: "production receiver" }
+                events:
+                  type: array
+                  nullable: true
+                  items: { $ref: "#/components/schemas/WebhookEventType" }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebhookSettings"
+                  - type: object
+                    properties:
+                      secretIssued:
+                        type: string
+                        nullable: true
+                        description: Newly issued signing key. Shown once; `null` when one already existed.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /developer/webhook/secret:
+    get:
+      tags:
+        - Developer
+      summary: Show the current webhook signing key
+      operationId: getWebhookSecret
+      description: Returns the key used for `X-Pay3-Signature`. Every call is written to the audit log. 409 if none has been issued yet.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhookSecret: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: No signing key issued yet (register a webhook URL first)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags:
+        - Developer
+      summary: Rotate the webhook signing key
+      operationId: rotateWebhookSecret
+      description: Issues a new signing key. The previous one stops validating immediately.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Rotated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhookSecret: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /developer/webhook/test:
+    post:
+      tags:
+        - Developer
+      summary: Send a `ping` test event to the registered endpoint
+      operationId: sendTestWebhookEvent
+      description: Enqueues one `ping` delivery. Check arrival in the delivery log. 409 if no endpoint is registered.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  eventType: { type: string, example: ping }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: No webhook endpoint registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /developer/webhook/deliveries:
+    get:
+      tags:
+        - Developer
+      summary: Webhook delivery log (newest first)
+      operationId: listWebhookDeliveries
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/WebhookDelivery" }
+                  paging:
+                    type: object
+                    properties:
+                      limit: { type: integer }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /developer/ip-allowlist:
+    put:
+      tags:
+        - Developer
+      summary: Set the source-IP allowlist for API-key calls
+      operationId: setIpAllowlist
+      description: |
+        Replaces the whole list (IPv4 / IPv6 / CIDR, up to 20 entries). **Only calls from listed
+        addresses are accepted.** While the list is empty and `ipAllowlistRequired` is `true`, API-key
+        calls are rejected with 403 `ip_not_registered`; calls from unlisted addresses get 403 `ip_not_allowed`.
+        Console access is never subject to the allowlist, so you can always fix the list from the console.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entries]
+              properties:
+                entries:
+                  type: array
+                  maxItems: 20
+                  items: { type: string }
+                  example: ["203.0.113.10", "198.51.100.0/24"]
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ipAllowlist:
+                    type: array
+                    items: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 
 components:
   securitySchemes:
@@ -1001,338 +2621,212 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        Bearer access token obtained from `POST /oauth/access-token`.
-        Send as `Authorization: Bearer <accessToken>`.
+        `Authorization: Bearer <accessToken>`. The scheme word must be `Bearer`
+        (compared case-insensitively per RFC 7235, so `bearer` is also accepted).
+        Any other scheme word — and a bare token with no scheme word — is rejected with
+        `401 { "message": "Unauthorized", "code": 401 }`.
+        The token is opaque: do not decode it or depend on its contents.
 
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
       in: header
       required: false
-      description: |
-        Unique key (UUID recommended) that makes a mutating request safely retryable.
-        Reusing the same key replays the first response; a request still in progress
-        returns `409`.
+      description: >
+        Unique key (UUID recommended) to make a mutating request idempotent.
+        Re-sending the same key replays the first result instead of executing
+        again. Strongly recommended on card/issue_card and kyc/submit.
       schema:
         type: string
 
+    # Shared query contract for the partner list endpoints. Out-of-range values,
+    # unparseable dates and unknown parameter *names* are all `400` — never
+    # silently clamped, ignored or dropped.
+    ListLimit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+      description: Decimal integer between 1 and 200. Out-of-range or non-integer values return `400`.
+    ListOffset:
+      name: offset
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      description: >
+        Decimal integer, 0 or greater. Negative or non-integer values return `400`.
+        An `offset` past the total returns an empty page (`200` with `"data": []`)
+        and the unchanged `total`, not an error.
+    ListFrom:
+      name: from
+      in: query
+      required: false
+      schema:
+        type: string
+        example: "2026-09-14"
+      description: >
+        Inclusive lower bound on `createdAt`. ISO 8601 date (`2026-09-14`, read as
+        00:00:00 UTC) or datetime (`2026-09-14T00:00:00Z` / `2026-09-14T09:00:00+09:00`).
+        **A date-only value is interpreted in UTC.**
+        Non-existent dates (`2026-02-30`) return `400`. An empty value means "no filter".
+        **Fractional seconds are accepted up to 6 digits (microseconds)**; 7 or more digits
+        return `400` rather than being silently rounded to the stored precision.
+    ListTo:
+      name: to
+      in: query
+      required: false
+      schema:
+        type: string
+        example: "2026-09-16"
+      description: >
+        Inclusive upper bound on `createdAt`. Same format and same `400` rules as `from`.
+        **A date-only value is interpreted in UTC and covers the whole day**
+        (`to=2026-09-15` means up to and including `2026-09-15T23:59:59.999999Z`).
+        A single day is therefore `?from=2026-09-15&to=2026-09-15`; there is no need to
+        pass the next day. A datetime value is used exactly as given.
+
+    ReferralCodePath:
+      name: code
+      in: path
+      required: true
+      description: The referral code. Matched case-insensitively.
+      schema:
+        type: string
+      example: "PARTNER-A"
+
   responses:
     BadRequest:
-      description: Invalid request.
+      description: Invalid request (the body names the offending field)
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
-          example:
-            message: Invalid request
-            code: 400
     Unauthorized:
-      description: Missing, invalid, or expired access token.
+      description: Missing or invalid credentials
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
-          example:
-            message: Unauthorized
-            code: 401
-    InvalidCredentials:
-      description: Invalid client credentials.
+    Forbidden:
+      description: Missing scope, or source IP not on the allowlist (`ip_not_registered` / `ip_not_allowed`)
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
-          example:
-            message: Invalid client secret
-            code: 400
-    IdempotencyConflict:
-      description: A request with the same `Idempotency-Key` is still in progress.
+    NotFound:
+      description: Not found within the calling client
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
-          example:
-            message: Request with this Idempotency-Key is already in progress
-            code: 409
-    ServerError:
-      description: Upstream or internal server error.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/ErrorResponse"
-          example:
-            message: Internal server error
-            code: 500
-
   schemas:
+    ApiKey:
+      type: object
+      properties:
+        id: { type: string, example: "9d2f1c9e-2c6e-4d1f-9a41-3c7d9f0b1a22" }
+        name: { type: string, example: "production backend" }
+        masked: { type: string, example: "pay3_sk_test_…C6mm" }
+        status: { type: string, enum: [active, revoked] }
+        createdAt: { type: string, format: date-time }
+        lastUsedAt: { type: string, format: date-time, nullable: true }
+        revokedAt: { type: string, format: date-time, nullable: true }
+        legacy:
+          type: boolean
+          description: "`true` for the pre-2026-09-18 key format (revocable via id `legacy`)."
+    WebhookEventType:
+      type: string
+      enum: [user.registered, user.kyc.updated, card.issued, card.activated, pool.deposit.credited, pool.transfer.completed, pool.transfer.failed]
+    WebhookSettings:
+      type: object
+      properties:
+        url: { type: string, nullable: true, example: "https://api.example.com/webhooks/pay3" }
+        hasSecret: { type: boolean }
+        description: { type: string, nullable: true }
+        events:
+          type: array
+          nullable: true
+          description: "`null` = subscribed to every event"
+          items: { $ref: "#/components/schemas/WebhookEventType" }
+        availableEvents:
+          type: array
+          items: { $ref: "#/components/schemas/WebhookEventType" }
+        registeredAt: { type: string, format: date-time, nullable: true }
+    WebhookDelivery:
+      type: object
+      properties:
+        id: { type: string }
+        eventType: { type: string, example: card.issued }
+        status: { type: string, description: "See webhooks.md for the vocabulary" }
+        attempts: { type: integer }
+        maxAttempts: { type: integer }
+        lastStatusCode: { type: integer, nullable: true }
+        lastError: { type: string, nullable: true }
+        payload: { type: object, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
+        deliveredAt: { type: string, format: date-time, nullable: true }
+        nextAttemptAt: { type: string, format: date-time, nullable: true }
+    KycStages:
+      type: object
+      description: |
+        Per-stage verification status. `identity` is the first-line identity check;
+        `cardIssuer` is the card issuer's own review that follows it. The overall `kycStatus`
+        becomes `approved` only when both are approved.
+      required: [identity, cardIssuer]
+      additionalProperties: false
+      properties:
+        identity:
+          type: object
+          required: [status]
+          additionalProperties: false
+          properties:
+            status:
+              type: string
+              enum: [not_submitted, pending, approved, rejected]
+        cardIssuer:
+          type: object
+          required: [status]
+          additionalProperties: false
+          properties:
+            status:
+              type: string
+              enum: [not_started, pending, approved, rejected]
+    ReferralCode:
+      type: object
+      required: [code, enabled, link, createdAt, updatedAt]
+      properties:
+        code: { type: string, example: "PARTNER-A" }
+        enabled: { type: boolean }
+        label: { type: string, nullable: true }
+        link:
+          type: string
+          description: Signup link that carries the code. Sandbox uses `app2.pay-3.io`.
+          example: "https://app2.pay-3.io/?ref=PARTNER-A"
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Paging:
+      type: object
+      required: [limit, offset, total]
+      properties:
+        limit: { type: integer, example: 50 }
+        offset: { type: integer, example: 0 }
+        total:
+          type: integer
+          nullable: true
+          description: Total rows matching the filters, before `limit` is applied.
     ErrorResponse:
       type: object
       properties:
         message:
           type: string
-          example: Invalid request
+          example: Invalid request parameters
         code:
           type: integer
           example: 400
-
-    SimpleSuccess:
-      type: object
-      properties:
-        message:
-          type: string
-          example: Success
-        code:
-          type: integer
-          example: 0
-
-    CardAddress:
-      type: object
-      properties:
-        addressLine1:
-          type: string
-          example: 123 Example Street
-        addressLine2:
-          type: string
-          example: Suite 100
-        city:
-          type: string
-          example: San Francisco
-        state:
-          type: string
-          example: CA
-        country:
-          type: string
-          description: ISO 3166-1 alpha-2 country code.
-          example: US
-        postalCode:
-          type: string
-          example: "94105"
-
-    Card:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-          example: cee34fdd-51cc-49bd-b71a-d6bc0653bb34
-        accountId:
-          type: string
-          format: uuid
-          example: bf9866ad-46e1-43ff-8b21-68a57c67acfc
-        token:
-          type: string
-          description: Provider card token.
-          example: cproxy0000000000000
-        status:
-          type: string
-          example: Active
-        currency:
-          type: string
-          example: USD
-        userName:
-          type: string
-          example: Alex Rivera
-        createTime:
-          type: string
-          format: date-time
-          example: "2025-07-17T04:44:16.964Z"
-        cardNoLastFour:
-          type: string
-          example: "2362"
-        cardAddress:
-          $ref: "#/components/schemas/CardAddress"
-        label:
-          type: string
-          example: Alex Rivera's card
-        useType:
-          type: string
-          example: online
-        balanceId:
-          type: string
-          format: uuid
-          example: f1f70e3a-ce61-4df2-92cc-83ce9666df7d
-        budgetId:
-          type: string
-          format: uuid
-          example: 950661d3-94c6-42d1-bd70-ba4986a1581d
-        bin:
-          type: string
-          example: "537100"
-
-    CardApplication:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-          example: 94655d78-71a8-43a5-9654-7c5996ee51c3
-        created_at:
-          type: string
-          format: date-time
-          example: "2025-11-08T12:55:54.644Z"
-        user_id:
-          type: string
-          format: uuid
-          example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
-        whitelisted:
-          type: boolean
-          example: false
-        code_redeemed:
-          type: [string, "null"]
-          example: null
-        phone_verified:
-          type: boolean
-          example: false
-        email_verified:
-          type: boolean
-          example: false
-        kyc_verified:
-          type: boolean
-          example: false
-        personal_data:
-          type: [object, "null"]
-          example: null
-        billing_data:
-          type: [object, "null"]
-          example: null
-        order_data:
-          type: [object, "null"]
-          example: null
-        card_issued:
-          type: boolean
-          example: false
-        card_issued_on:
-          type: [string, "null"]
-          format: date-time
-          example: null
-        card_id:
-          type: [string, "null"]
-          format: uuid
-          example: null
-        budget_id:
-          type: [string, "null"]
-          format: uuid
-          example: null
-        kyc_status:
-          type: [string, "null"]
-          example: null
-
-    User:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-          example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
-        first_name:
-          type: string
-          example: Alex
-        last_name:
-          type: string
-          example: Rivera
-        email:
-          type: [string, "null"]
-          example: alex.rivera@example.com
-        phone_number:
-          type: [string, "null"]
-          example: null
-        telegram_id:
-          type: [string, "null"]
-          example: "835519111"
-        client_id:
-          type: string
-          format: uuid
-          example: 1df64a72-72be-4522-a0ed-62a7a608e6d3
-        created_at:
-          type: string
-          format: date-time
-          example: "2025-11-06T11:24:28.575Z"
-        updated_at:
-          type: [string, "null"]
-          format: date-time
-          example: null
-        signup_type_id:
-          type: string
-          example: "835519111"
-        signup_type:
-          type: string
-          example: TELEGRAM
-        card_issued:
-          type: boolean
-          example: false
-        wallet_id:
-          type: [string, "null"]
-          format: uuid
-          example: null
-        account_id:
-          type: [string, "null"]
-          format: uuid
-          example: null
-        budget_id:
-          type: [string, "null"]
-          format: uuid
-          example: null
-        sumsub_id:
-          type: [string, "null"]
-          example: null
-        kyc_verified:
-          type: [boolean, "null"]
-          example: null
-        cardholder_id:
-          type: [string, "null"]
-          format: uuid
-          example: null
-
-    IssuanceEvent:
-      type: object
-      properties:
-        phase:
-          type: string
-          description: |
-            Current provisioning phase. `done` and `failed` are terminal.
-          enum:
-            - validating
-            - provider_call
-            - db_committed
-            - card_fetched
-            - funds_settled
-            - shipping_requested
-            - done
-            - failed
-          example: provider_call
-        meta:
-          type: object
-          description: Phase-specific metadata (e.g. card type, reason on failure).
-          example:
-            type: virtual
-        application_id:
-          type: [string, "null"]
-          format: uuid
-          example: 94655d78-71a8-43a5-9654-7c5996ee51c3
-        created_at:
-          type: string
-          format: date-time
-          example: "2025-11-08T12:56:01.200Z"
-
-    Transaction:
-      type: object
-      properties:
-        transactionId:
-          type: string
-          example: txn_123456
-        amount:
-          type: number
-          format: float
-          example: 120.75
-        currency:
-          type: string
-          example: USD
-        status:
-          type: string
-          example: COMPLETED
-        merchantName:
-          type: string
-          example: Amazon
-        transactionDate:
-          type: string
-          format: date-time
-          example: "2025-07-20T14:32:11.000Z"
