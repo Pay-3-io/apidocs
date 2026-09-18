@@ -3,9 +3,17 @@
 Pay3 の B2B カード発行 API の公式ドキュメント。`openapi.yaml`（OpenAPI 3.1）を [Scalar](https://github.com/scalar/scalar) で静的レンダリングする構成。**完全無料・依存サービスなし**（Scalar は CDN の OSS、ホスティングは GitHub Pages）。
 
 ## ファイル
-- `openapi.yaml` — API 仕様（唯一の正。これを編集すれば docs が更新される）
-- `index.html` — Scalar レンダラ（モダンUI・ダークモード）（`openapi.yaml` を読み込む）
+**正本は `Pay-3-io/backend-V3` の `docs/`**（このリポジトリはその公開用コピー。編集は backend 側で行い、ここへ同期する）。
+
+- `index.html` — ガイド閲覧（`api/*.md` を marked で描画。ナビ固定）
+- `api/*.md` — ガイド（quickstart / authentication / endpoints / users / pool / referral-codes / idempotency / webhooks / environments）
+- `reference.html` — Scalar レンダラ（`openapi.yaml` を読み込む）
+- `openapi.yaml` — API 仕様（OpenAPI 3.0.3）
+- `llms.txt` — LLM 向け目次
+- `.nojekyll` — GitHub Pages の Jekyll 変換を止める（`api/*.md` をそのまま配信するため必須）
 - `CNAME` — カスタムドメイン `developer.pay-3.io` 用
+
+同期: backend の `docs/{openapi.yaml,index.html,reference.html,llms.txt}` と `docs/api/` の上記 9 本をコピーする（`junoe-*.md` は社内向けなので含めない）。
 
 ## ローカルプレビュー
 ```bash

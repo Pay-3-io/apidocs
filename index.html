@@ -1,25 +1,82 @@
 <!doctype html>
-<html>
+<html lang="ja">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Pay3 B2B API</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💳</text></svg>" />
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Pay3 External (B2B) API — Docs</title>
     <style>
-      body { margin: 0; }
+      :root { --fg:#1a1a2e; --muted:#6b7280; --accent:#3b5bdb; --bg:#fff; --line:#e5e7eb; }
+      * { box-sizing: border-box; }
+      body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; color:var(--fg); background:var(--bg); }
+      .wrap { display:flex; min-height:100vh; }
+      nav { width:260px; border-right:1px solid var(--line); padding:24px 16px; position:sticky; top:0; height:100vh; overflow:auto; }
+      nav h1 { font-size:15px; margin:0 0 4px; }
+      nav .sub { color:var(--muted); font-size:12px; margin-bottom:20px; }
+      nav a { display:block; padding:8px 10px; border-radius:8px; color:var(--fg); text-decoration:none; font-size:14px; cursor:pointer; }
+      nav a:hover { background:#f3f4f6; }
+      nav a.active { background:#eef2ff; color:var(--accent); font-weight:600; }
+      nav .group { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; margin:18px 10px 6px; }
+      main { flex:1; padding:40px 56px; max-width:900px; }
+      main img { max-width:100%; }
+      main table { border-collapse:collapse; width:100%; margin:16px 0; font-size:14px; }
+      main th, main td { border:1px solid var(--line); padding:8px 10px; text-align:left; }
+      main pre { background:#0f172a; color:#e2e8f0; padding:16px; border-radius:10px; overflow:auto; font-size:13px; }
+      main code { background:#f1f5f9; padding:2px 5px; border-radius:4px; font-size:.92em; }
+      main pre code { background:none; padding:0; }
+      main h1 { margin-top:0; }
+      main h2 { margin-top:32px; padding-top:8px; border-top:1px solid var(--line); }
+      a { color:var(--accent); }
     </style>
   </head>
   <body>
-    <!-- Scalar API Reference (modern UI). spec は openapi.yaml を読み込む -->
+    <div class="wrap">
+      <nav>
+        <h1>Pay3 External API</h1>
+        <div class="sub">B2B integration docs</div>
+        <div class="group">Guides</div>
+        <a data-doc="api/quickstart.md">Quickstart</a>
+        <a data-doc="api/authentication.md">Authentication</a>
+        <a data-doc="api/endpoints.md">Endpoints</a>
+        <a data-doc="api/users.md">Users</a>
+        <a data-doc="api/pool.md">Partner Pool</a>
+        <a data-doc="api/referral-codes.md">Referral Codes</a>
+        <a data-doc="api/idempotency.md">Idempotency</a>
+        <a data-doc="api/webhooks.md">Webhooks</a>
+        <a data-doc="api/environments.md">Environments</a>
+        <div class="group">Reference</div>
+        <a href="reference.html">API Reference (OpenAPI)</a>
+        <a href="openapi.yaml">openapi.yaml</a>
+        <a href="llms.txt">llms.txt</a>
+      </nav>
+      <main id="content">Loading…</main>
+    </div>
+
     <script
-      id="api-reference"
-      data-url="openapi.yaml"
-      data-configuration='{"theme":"default","layout":"modern","darkMode":true,"hideDownloadButton":false,"metaData":{"title":"Pay3 B2B API"}}'
-    ></script>
-    <script
-      src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.61.0/dist/browser/standalone.js"
-      integrity="sha384-Xs/iJWxWjlZkAyFsV9D9nI5WP5iKFnNNbnZVXMsTxD5dseQbCaaaYIb0YUtR9Ckl"
-      crossorigin="anonymous"
-    ></script>
+      src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
+      integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi"
+      crossorigin="anonymous"></script>
+    <script>
+      const content = document.getElementById("content");
+      const links = Array.from(document.querySelectorAll("nav a[data-doc]"));
+
+      async function load(path, push) {
+        links.forEach((a) => a.classList.toggle("active", a.dataset.doc === path));
+        content.textContent = "Loading…";
+        try {
+          const res = await fetch(path);
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const md = await res.text();
+          // marked output is from our own trusted in-repo markdown files.
+          content.innerHTML = marked.parse(md);
+        } catch (e) {
+          content.textContent = "Failed to load " + path + " (" + e.message + ")";
+        }
+        if (push) history.replaceState(null, "", "#" + path);
+      }
+
+      links.forEach((a) => a.addEventListener("click", (ev) => { ev.preventDefault(); load(a.dataset.doc, true); }));
+      const initial = location.hash.replace(/^#/, "") || "api/quickstart.md";
+      load(initial, false);
+    </script>
   </body>
 </html>
