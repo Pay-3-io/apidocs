@@ -20,4 +20,4 @@
 ## Specs
 
 - [OpenAPI](openapi.yaml): 機械可読な API 仕様 (OpenAPI 3.0.3)
-- [API Reference](reference.html): OpenAPI を Scalar で描画した対話型リファレンス
+- [API Reference](index.html): OpenAPI + ガイドを Scalar で描画した対話型リファレンス（ガイドは Introduction 配下）

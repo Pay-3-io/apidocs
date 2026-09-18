@@ -5,15 +5,20 @@ Pay3 の B2B カード発行 API の公式ドキュメント。`openapi.yaml`（
 ## ファイル
 **正本は `Pay-3-io/backend-V3` の `docs/`**（このリポジトリはその公開用コピー。編集は backend 側で行い、ここへ同期する）。
 
-- `index.html` — ガイド閲覧（`api/*.md` を marked で描画。ナビ固定）
-- `api/*.md` — ガイド（quickstart / authentication / endpoints / users / pool / referral-codes / idempotency / webhooks / environments）
-- `reference.html` — Scalar レンダラ（`openapi.yaml` を読み込む）
-- `openapi.yaml` — API 仕様（OpenAPI 3.0.3）
-- `llms.txt` — LLM 向け目次
-- `.nojekyll` — GitHub Pages の Jekyll 変換を止める（`api/*.md` をそのまま配信するため必須）
+- `index.html` — Scalar レンダラ（モダン UI・ダークモード）。`openapi.yaml` を読み込む。**これ 1 枚が公開サイト**
+- `openapi.yaml` — 公開用の API 仕様。`scripts/build-openapi.py` が backend の `openapi.yaml` に
+  ガイド（`api/*.md` 9 本）を `info.description` として埋め込んで生成する（Scalar の Introduction 配下に出る）
+- `api/*.md` / `llms.txt` — ガイドの生ファイルと LLM 向け目次（人は `index.html` で読む）
+- `.nojekyll` — GitHub Pages の Jekyll 変換を止める（`api/*.md` をそのまま配信するため）
 - `CNAME` — カスタムドメイン `developer.pay-3.io` 用
 
-同期: backend の `docs/{openapi.yaml,index.html,reference.html,llms.txt}` と `docs/api/` の上記 9 本をコピーする（`junoe-*.md` は社内向けなので含めない）。
+同期手順（backend の docs が更新されたら）:
+```bash
+cp <backend-V3>/docs/api/{quickstart,authentication,endpoints,users,pool,referral-codes,idempotency,webhooks,environments}.md api/
+cp <backend-V3>/docs/llms.txt .
+python3 scripts/build-openapi.py <backend-V3>/docs   # → openapi.yaml
+```
+`junoe-*.md` は社内向けなので含めない。
 
 ## ローカルプレビュー
 ```bash
