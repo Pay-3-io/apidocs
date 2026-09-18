@@ -32,11 +32,13 @@ def main(src: str) -> None:
     src_dir = pathlib.Path(src)
     spec = (src_dir / "openapi.yaml").read_text(encoding="utf-8")
     parts = [
-        "Pay3 のカード発行・KYC・決済インフラを、御社の UI を保ったまま API で利用するための B2B API です。",
-        "認証は OAuth アクセストークン（クライアント ID + API キー）。資格情報・Webhook・送信元 IP は"
-        "パートナーコンソールの「開発者」メニューでのみ管理します（API からは操作できません）。",
+        "B2B API for partners who use Pay3's card issuance, identity verification and payment "
+        "infrastructure behind their own UI. Authentication is an OAuth access token obtained with "
+        "your client ID and API key. API keys, the webhook endpoint and the source-IP allowlist are "
+        "managed in the partner console's Developer menu.",
         "",
-        "以下はガイドです。各エンドポイントの機械可読な定義は左のメニュー（Auth 以降）を参照してください。",
+        "The guides below cover the integration end to end. The machine-readable definition of every "
+        "endpoint is in the sections that follow (Auth onward).",
         "",
     ]
     for slug, _title in GUIDES:

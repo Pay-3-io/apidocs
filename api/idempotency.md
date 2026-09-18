@@ -1,10 +1,10 @@
 # Idempotency
 
-金銭やプロビジョニングが動く操作（カード発行、KYC submit）は、ネットワーク再送による**二重実行**を防ぐため冪等化されています。
+Operations that move money or provision accounts are idempotent, so a network retry cannot execute them twice.
 
-## 使い方
+## Usage
 
-リクエストに `Idempotency-Key` ヘッダを付けます。値は御社が生成する一意な文字列（UUID 推奨）。
+Send an `Idempotency-Key` header. The value is a unique string you generate; a UUID is recommended.
 
 ```bash
 curl -X POST "$BASE_URL/card/issue_card" \
@@ -13,22 +13,23 @@ curl -X POST "$BASE_URL/card/issue_card" \
   -d '{ "userId": "<uuid>", "type": "virtual" }'
 ```
 
-## 挙動
+## Behavior
 
-- 同一 `(client, Idempotency-Key, endpoint)` の初回リクエストのみ実行され、結果が保存されます。
-- 同じキーで再送すると、**最初の結果がそのまま返ります**（再実行されない＝カードが2枚発行されない）。
-  **これは保存されたレスポンスの再生であって、最新の状態ではありません。** 例えば
-  `POST /pool/transfer` の再送は、その指示が既に `settled` になっていても初回の
-  `{"status":"pending"}` を返します。**最新状態は `GET /pool/transfer/{transferId}` で取得**
-  してください（「同一キーの再送 = 同一応答」を契約として保つためにこの形にしています）。
-- 同じキーに**異なるボディ**を付けて送ると `409` を返します（別の指示を同じキーで送ってしまった取り違えの検出）。
-- 最初のリクエストがまだ処理中に同じキーが来た場合は `409`（in progress）を返します。少し待って再送してください。
-- 最初のリクエストがサーバーエラーで失敗した場合はキーが解放され、同じキーで再試行できます。
+- Only the first request for a given `(client, Idempotency-Key, endpoint)` triple is executed, and its result is stored.
+- A retry with the same key returns **the stored first result**, without re-executing. Two cards are never issued.
+- That stored result is a replay, **not the current state**. For example, retrying `POST /pool/transfer` returns the original `{"status":"pending"}` even after the instruction has settled. This keeps "same key, same response" a firm contract. Read current state with `GET /pool/transfer/{transferId}`.
+- Reusing a key with a **different body** returns `409`. This catches a key accidentally attached to a different instruction.
+- Sending the same key while the first request is still in progress returns `409` (in progress). Wait briefly and retry.
+- If the first request failed with a server error, the key is released and can be reused.
 
-## 対象エンドポイント
+## Endpoints that support it
 
-- `POST /card/issue_card`
-- `POST /kyc/submit`
-- `POST /pool/transfer`
+| Endpoint |
+|---|
+| `POST /card/issue_card` |
+| `POST /kyc/submit` |
+| `POST /pool/transfer` |
 
-ヘッダ未指定でも動作しますが、**上記の操作では必ず付けることを強く推奨**します。
+Requests without the header still work, but sending it on these operations is strongly recommended.
+
+See also: [Quickstart](quickstart.md) · [openapi.yaml](openapi.yaml)

@@ -1,15 +1,17 @@
 # Authentication
 
-Pay3 External API の認証は2層に分かれています。
+Every Pay3 External API call is authenticated with a short-lived OAuth access token obtained from your client credentials.
 
-## 1. 管理プレーン（Pay3 管理者）
+## Credentials
 
-クライアント自体の作成・停止は Pay3 側の管理操作で、御社が呼ぶ API ではありません。
-御社の資格情報（API キー）・Webhook・送信元 IP は、**パートナーコンソールの「開発者」メニュー**で管理します。
+Clients are created by Pay3. Your credentials (API keys), your webhook endpoint, and your source-IP allowlist are all managed in the **Developer** menu of the partner console.
 
-## 2. データプレーン（B2B クライアント）— OAuth
+| Value | Format | Where it comes from |
+|---|---|---|
+| `clientId` | `client_` + 32 hex characters | Shown in the Developer menu. |
+| `clientSecret` | API key: `pay3_sk_test_…` (sandbox) or `pay3_sk_live_…` (production) | Issued in the Developer menu. The full key is displayed only at the moment of issuance and is not stored in plaintext by Pay3 — issue a new key if you lose it. |
 
-御社が実 API を呼ぶときは、クライアント資格情報でアクセストークンを取得します。
+## Requesting an access token
 
 ```bash
 curl -X POST "$BASE_URL/oauth/access-token" \
@@ -18,50 +20,36 @@ curl -X POST "$BASE_URL/oauth/access-token" \
 # => { "success": true, "accessToken": "<token>" }
 ```
 
-- 取得したトークンを **`Authorization: Bearer <accessToken>`** で送ります。
-  スキームは **`Bearer` のみ**受理します（RFC 7235 のとおり大文字小文字は区別しないので `bearer` でも通ります）。
-  `Basic` など他のスキーム語や、スキーム語を省いてトークンだけを送った場合は
-  **`401 { "message": "Unauthorized", "code": 401 }`** になります。
-- ヘッダの中身は **半角スペース 1 個で区切った 2 語ちょうど**（`Bearer` ＋ トークン）にしてください。
-  区切りが二重スペースやタブになっている、トークンの後ろに余計な語が付いている、といった場合は
-  同じ **`401`** です（トークン自体が正しくても通りません）。
-  文字列を組み立てるときは `"Bearer " + accessToken.trim()` のように整形してください。
-  なお**値の末尾のスペースは HTTP の仕様上そこで取り除かれる**ため、`401` にはなりません。
-- 既定の有効期限は **1時間**。失効後は再取得してください。
-- `clientId` は **クライアント ID（`client_` + 32 桁の 16 進数）**、`clientSecret` は **API キー
-  （`pay3_sk_test_…` = サンドボックス / `pay3_sk_live_…` = 本番）**。どちらもコンソールの「開発者」で確認できます
-  （API キーは発行した瞬間にだけ全文が表示されます。Pay3 側にも平文は残りません。控えを失った場合は再発行してください）。
-  2026-09-18 より前に発行されたクライアントは、従来どおり表示名（`client_name`）と旧形式のキーでも通ります。
-- トークンに含まれるのは **クライアント識別子・発行時刻・有効期限** だけです（`api_key` は含まれません）。
-  形式は Pay3 内部の実装詳細なので、**トークンをデコードして中身に依存しないでください**（予告なく変わります）。
+This endpoint accepts `POST` only. Other methods return `404 { "message": "Unknown endpoint. Check the HTTP method and path against docs/api.", "code": 404 }`. The method check runs before authentication, so a wrong method never looks like a credentials problem.
 
-### エラー
+## Using the token
 
-このエンドポイントのエラーも、他と同じ `{ message, code }` の **2 キー**です。
+- Send the token as `Authorization: Bearer <accessToken>`.
+- Only the `Bearer` scheme is accepted. The scheme word is case-insensitive, so `bearer` also works. Any other scheme word, or a bare token with no scheme word, returns `401 { "message": "Unauthorized", "code": 401 }`.
+- The header value must be exactly two words separated by a single space. A double space, a tab, or extra words after the token return `401` even when the token itself is valid, so build the value as `"Bearer " + accessToken.trim()`. Trailing whitespace is stripped by HTTP itself and does not cause a `401`.
+- Tokens expire after one hour by default. Request a new one after expiry.
+- The token carries only a client identifier, an issue time, and an expiry. Its format is an implementation detail and can change without notice, so do not decode it or depend on its contents.
 
-| ステータス | 本文 | 意味・対処 |
+## Errors
+
+Errors from this endpoint use the same two-key shape as the rest of the API: `{ message, code }`.
+
+| Status | Body | Meaning |
 |---|---|---|
-| `400` | `{ "message": "Invalid JSON body", "code": 400 }` | ボディが JSON として読めません（末尾カンマ・閉じ括弧漏れ・空ボディなど）。**入力の誤りが `500` になることはありません** |
-| `400` | `{ "message": "Client ID or name is required", "code": 400 }` | `clientId` が入っていません |
-| `401` | `{ "message": "Invalid client credentials", "code": 401 }` | `clientId` と `clientSecret` の組み合わせが通りません。**`clientId` が見つからない場合と `clientSecret` が一致しない場合は同じ応答**です（どちらだったかは返しません）。**`clientId` はクライアント ID（`client_…`）です**（表示名や内部 UUID ではありません。2026-09-18 より前のクライアントは表示名も通ります）。**あわせて、メソッドが `POST` であることも確認してください**（`GET` など他のメソッドは `404` になります — 下記） |
-| `500` | `{ "message": "Failed to resolve client", "code": 500 }` / `{ "message": "Failed to issue access token", "code": 500 }` | Pay3 側の障害です。そのまま再送してください |
+| `400` | `{ "message": "Invalid JSON body", "code": 400 }` | The body could not be parsed as JSON. Input errors are never reported as `500`. |
+| `400` | `{ "message": "Client ID or name is required", "code": 400 }` | `clientId` was absent. |
+| `401` | `{ "message": "Invalid client credentials", "code": 401 }` | The `clientId` / `clientSecret` pair was not accepted. |
+| `500` | `{ "message": "Failed to resolve client", "code": 500 }` or `{ "message": "Failed to issue access token", "code": 500 }` | A Pay3-side fault. Retry the request unchanged. |
 
-> `401` を 2 通に分けない理由: 分けると総当たりで**クライアント名の在否だけ**が判るためです。
-> 設定を切り分けるときは `clientId`（`client_…`）と `clientSecret`（`pay3_sk_…`）の両方を確認してください。キーの接頭辞で環境（test / live）が分かります。
-> Pay3 側にはどちらで外れたかのログが残るので、判らないときはお問い合わせください。
+An unknown `clientId` and a mismatched `clientSecret` return the same `401`. When troubleshooting, check both values: `clientId` must be the client ID (`client_…`), not a display name, and the API key prefix (`test` / `live`) must match the environment you are calling.
 
-このエンドポイントは **`POST` のみ**です。`GET` / `PUT` / `DELETE` で叩いた場合は
-**`404 { "message": "Unknown endpoint. Check the HTTP method and path against docs/api.", "code": 404 }`**
-を返します（認証は関係しないので `401` にはなりません）。**メソッドの間違いが「資格情報が違う」に
-見えないように**、この判定は認証より前に行っています。
+## Tenant isolation
 
-## テナント分離
+- Users you create through `users/register` are bound to your client.
+- Every data operation is scoped to your client boundary. Users and cards belonging to other clients are not reachable and return `404` even when they exist.
+- Clients are mutually invisible.
 
-- 御社が `users/register` で作成したユーザーは、御社クライアントに紐づきます。
-- 各データ操作はクライアント境界で隔離され、**他クライアントのユーザー／カードにはアクセスできません**（存在しても 404 を返します）。
-- 複数クライアントは互いに不可視です。
+## Handling credentials
 
-## 資格情報の取り扱い
-
-- API キー（client secret）とアクセストークンはサーバー側でのみ保持し、フロントエンドやログに出さないでください。
-- アクセストークンの漏洩は**有効期限（既定 1 時間）で自然に失効**します。API キーの漏洩は失効しないため、疑いがある場合はコンソールの「開発者」で**新しいキーを発行し、切り替えが済んだら古いキーを取り消して**ください。キーは名前を付けて複数持てるので、無停止で入れ替えられます。
+- Keep API keys and access tokens server-side. Do not expose them in a frontend or in logs.
+- To rotate a key, issue a new one in the Developer menu, switch your systems over, then revoke the old one. You can hold several named keys at once, so rotation needs no downtime.

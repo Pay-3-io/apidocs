@@ -1,87 +1,78 @@
-# Referral Codes（紹介コード）
+# Referral Codes
 
-御社の紹介コード（代理店コード）を登録し、コード付きリンク経由で登録したユーザーを
-そのコードに紐付けます。
+Register the referral codes your client uses, and attribute the users who sign up through them.
 
-すべて `Authorization: Bearer <accessToken>` が必要です。
-Base URL (sandbox): `https://api-staging.pay-3.io/functions/v1/external-service`
+All requests require `Authorization: Bearer <accessToken>`.
 
-> **ベース URL は末尾の `/external-service` まで含みます**（仕様書 §2 と同じ定義です）。
-> 以下の見出しのパスはすべてそのベース URL の直下です
-> （例: `GET {BASE_URL}/referral-codes`）。同じ注記が [pool.md](pool.md) の冒頭にあります。
-
-## 必要なスコープ
-
-| スコープ | 範囲 |
+| Environment | Base URL |
 |---|---|
-| `referrals:read` | 一覧の取得 |
-| `referrals:write` | 登録・有効化切替・削除（`referrals:read` を含む） |
+| Sandbox | `https://api-staging.pay-3.io/functions/v1/external-service` |
+| Production | `https://api.pay-3.io/functions/v1/external-service` |
 
-## コードの規則
+The base URL includes the trailing `/external-service`; the paths below sit directly under it (for example `GET {BASE_URL}/referral-codes`).
 
-- 英数字・ハイフン・アンダースコアの 3〜64 文字。
-- **大文字小文字は区別しません**。`PARTNER-A` と `partner-a` は同じコードで、共存できません。
-- **早い者勝ち**。全社横断で一意です（ユーザーの登録導線が 1 つの名前空間のため）。
-- **誤登録は「変更」ではなく「削除して新規作成」**してください。改名 API は提供しません
-  （カスケード変更と履歴の取り扱いを避けるための明示的な決定です）。
+## Scopes
+
+| Scope | Covers |
+|---|---|
+| `referrals:read` | Listing codes |
+| `referrals:write` | Creating, enabling, disabling and deleting codes (includes `referrals:read`) |
+
+## Code rules
+
+- 3–64 characters of `A-Z`, `a-z`, `0-9`, `-` and `_`.
+- **Case-insensitive.** `PARTNER-A` and `partner-a` are the same code and cannot coexist.
+- **First come, first served**, unique across all partners, because sign-up links share a single namespace.
+- **There is no rename.** To correct a code, delete it and create a new one.
 
 ## GET /referral-codes
 
-自社のコード一覧。
+Lists all of your codes, newest first.
 
 - 200:
   ```json
   {
     "data": [
-      { "code": "PARTNER-A", "enabled": true, "label": "代理店A",
+      { "code": "PARTNER-A", "enabled": true, "label": "Agency A",
         "link": "https://app.pay-3.io/?ref=PARTNER-A",
         "createdAt": "...", "updatedAt": "..." }
     ]
   }
   ```
-- **クエリ引数は受け付けません。** 常に自社の全コードを新しい順で返します
-  （ページングも絞り込みもありません）。`?enabled=true` のような引数を付けると `400` で、
-  本文は `Unknown query parameter "enabled". Accepted: (none)` になります。
-  効いていない引数を黙って捨てて「絞り込めたように見える全件」を返さないためです
-  （詳細は [pool.md の「クエリ引数の検証」](pool.md#クエリ引数の検証)）。
+- `link` is the sign-up link carrying the code: `https://app2.pay-3.io/?ref=<code>` in sandbox, `https://app.pay-3.io/?ref=<code>` in production.
+- **No query parameters are accepted.** Any parameter returns `400` with a body such as `Unknown query parameter "enabled". Accepted: (none)`, so a filter that looks applied but is not can never be mistaken for a complete list. There is no paging and no filtering.
 
 ## POST /referral-codes
 
-- body: `{ "code": "PARTNER-A", "label": "代理店A", "enabled": true }`
-  - `label` / `enabled` は省略可（`enabled` の既定は `true`）
-- 201: 上記 1 件の形
-- 400: コードの形式が不正
-- 409: 既に使われている（早い者勝ち）
+- body: `{ "code": "PARTNER-A", "label": "Agency A", "enabled": true }`
+  - `label` and `enabled` are optional; `enabled` defaults to `true`. `label` is a free-form note for your own use and is not shown to end users.
+- 201: the single code, in the shape above.
+- 400: invalid code format.
+- 409: the code is already taken, by you or by another partner.
 
 ## PATCH /referral-codes/{code}
 
-有効化 / 無効化のみ。
+Enables or disables a code; `enabled` is the only mutable field.
 
 - body: `{ "enabled": false }`
-- 200: 更新後の 1 件
-- 400: `enabled` 以外を変更しようとした（改名は削除 → 新規作成）
-- 404: 見つからない
+- 200: the updated code.
+- 400: an attempt to change anything other than `enabled` (renaming means delete, then create).
+- 404: no such code for your client.
 
-無効化したコードは新規の紐付けに使えなくなります（`POST /users/register` が 400 を返す）。
-**既に紐付いたユーザーの帰属は変わりません。**
+A disabled code stops attributing new sign-ups — `POST /users/register` returns `400` for it. **Users already attributed keep their attribution.**
 
 ## DELETE /referral-codes/{code}
 
 - 200: `{ "code": "PARTNER-A", "deleted": true }`
-- 404: 見つからない
+- 404: no such code for your client.
 
-ユーザーの帰属は登録時点で確定するため、**削除しても過去の帰属・集計は変わりません。**
-削除は元に戻せないので、コンソールから操作する場合は確認のうえ実行してください。
+Attribution is fixed at sign-up, so deleting a code changes neither past attribution nor reporting. Deletion cannot be undone.
 
-> コードは完全一致で照合します。`%` や `_` をパスに入れても
-> ワイルドカードとして扱われることはありません（一括削除はできません）。
+Codes are matched exactly, case-insensitively. Wildcard characters carry no meaning in the path: `%` and `_` are not expanded, so bulk deletion is not possible.
 
----
+## Attributing users
 
-## ユーザーとの紐付け
-
-`POST /users/register` に `referral_code` を付けて登録すると、
-そのユーザーがコードに紐付きます。
+Pass `referral_code` to `POST /users/register` to attribute the new user to that code.
 
 ```bash
 curl -X POST "$BASE_URL/users/register" \
@@ -94,16 +85,14 @@ curl -X POST "$BASE_URL/users/register" \
       }'
 ```
 
-- 成功時のレスポンスに `referralCode` が入ります（紐付かなかった場合は `null`）。
-- **`referral_code` に指定できるのは、ご自身の client で発行されたコードだけです。**
-  他社が発行したコードは、実在しないコードと**同じ `400`**（同一のレスポンス本文）になります。
-- **コードが未登録 / 無効化済みの場合は `400` を返し、ユーザーを作成しません。**
-  黙って無視すると「コードを付けたのに紐付いていない」状態が静かに発生するためです。
-- 紐付けは **1 ユーザー 1 件**で、後から上書きされません。
+- On success the response carries `referralCode`, or `null` if no attribution was made.
+- **Only codes issued by your own client are accepted.** A code belonging to another partner returns the same `400`, with a byte-identical body, as a code that does not exist.
+- **An unknown or disabled code returns `400` and no user is created.** Ignoring it silently would leave a user who carried a code but was never attributed.
+- Attribution is **one code per user** and is never overwritten later.
 
-### Web 登録導線（`?ref=` 付きリンク）について
+### Sign-up links (`?ref=`)
 
-`GET /referral-codes` が返す `link`（`https://app.pay-3.io/?ref=CODE`）は、
-**Web 登録画面側での `?ref` 取り込みが未実装のため、現時点では紐付きません。**
-2026-09-14 時点で紐付けが動作するのは上記の **API 登録経路のみ**です。
-Web 導線を使う場合は別途 Pay3 側の対応が必要です。
+Users who sign up through the `link` returned by `GET /referral-codes` are attributed to that code at sign-up and reported by the `user.registered` webhook ([Webhooks](webhooks.md)). They appear in `GET /users/list` with the same `referralCode` value.
+
+---
+The machine-readable specification is [openapi.yaml](openapi.yaml). See also [Users](users.md) for reading the attributed users and their status.

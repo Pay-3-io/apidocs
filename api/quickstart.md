@@ -1,21 +1,20 @@
 # Quickstart
 
-Pay3 External (B2B) API を使って、ユーザー登録から仮想カード発行までを通す最短手順です。
+The shortest path through the Pay3 External (B2B) API, from registering a user to issuing a virtual card.
 
 - **Base URL (sandbox)**: `https://api-staging.pay-3.io/functions/v1/external-service`
-- 認証は **OAuth アクセストークン**（クライアント ID と API キーで取得）。クライアントの作成は Pay3 が行います。
-- フロントエンド（ユーザー向け画面）は御社で実装します。本 API はバックエンドのみを提供します。
+- Authentication uses an OAuth access token obtained with a client ID and an API key.
+- The API is backend-only. You build the end-user interface yourself.
 
-## 0. 事前準備
+## 0. Before you start
 
-Pay3 が御社用のクライアントを作成し、パートナーコンソールに御社の担当者を招待します。
-コンソールの「開発者」メニューで **クライアント ID（`client_` + 32 桁の 16 進数）** を確認し、
-**API キー（`pay3_sk_test_…` = サンドボックス / `pay3_sk_live_…` = 本番）** を発行してください。
-キーの全文は発行した瞬間にだけ表示されます（Pay3 側にも平文は残りません）。控えを失った場合は再発行してください。
-続けて同じ画面で **送信元 IP** を登録します — 登録した IP からの呼び出しだけを受け付けます
-（未登録の間は 403 `ip_not_registered`）。
+Pay3 creates your client and invites you to the partner console. In the console's **Developer** menu:
 
-## 1. アクセストークンを取得
+1. Look up your **client ID** (`client_` + 32 hex characters).
+2. Issue an **API key** (`pay3_sk_test_…` for sandbox, `pay3_sk_live_…` for production). The full key is shown only at issuance and is not recoverable afterwards; issue a new one if you lose it.
+3. Register your **source IPs**. Only calls from registered IPs are accepted; until an IP is registered, calls from it return `403` `ip_not_registered`.
+
+## 1. Get an access token
 
 ```bash
 curl -X POST "$BASE_URL/oauth/access-token" \
@@ -24,11 +23,9 @@ curl -X POST "$BASE_URL/oauth/access-token" \
 # => { "success": true, "accessToken": "<token>" }
 ```
 
-以降の API 呼び出しは `Authorization: Bearer <accessToken>` を付けます。トークンの有効期限は既定1時間です。
-スキームは **`Bearer` のみ**受理します（大文字小文字は区別しません）— `Basic` 等の他のスキーム語や、
-スキーム語を省いたトークン単体は `401` です。詳細は [authentication.md](./authentication.md)。
+Send the token as `Authorization: Bearer <accessToken>` on every subsequent call. Tokens expire after one hour by default. Only the `Bearer` scheme is accepted; other schemes, or a bare token with no scheme word, return `401`. See [Authentication](authentication.md).
 
-## 2. ユーザーを登録
+## 2. Register a user
 
 ```bash
 curl -X POST "$BASE_URL/users/register" \
@@ -38,26 +35,28 @@ curl -X POST "$BASE_URL/users/register" \
 # => { "data": { "userId": "<uuid>", ... }, "code": 0 }
 ```
 
-> `signup_type`（`EMAIL`/`PHONE`/`TELEGRAM`）と `signup_type_id`（その識別子）は**必須**です。
+`signup_type` (`EMAIL`, `PHONE`, or `TELEGRAM`) and `signup_type_id` (the corresponding identifier) are required.
 
-登録したユーザーは御社クライアントに紐づき（テナント分離）、他クライアントからは参照できません。
+Users you register belong to your client. Other clients cannot see them.
 
-## 3. KYC を実施（カード発行の前提）
+## 3. Run KYC
+
+Identity verification is a prerequisite for card issuance.
 
 ```bash
-# Sumsub アクセストークンを取得し、御社UIで本人確認を完了させる
+# Get a Sumsub access token and complete verification in your own UI
 curl -X POST "$BASE_URL/kyc/access-token" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{ "userId": "<uuid>" }'
 
-# 本人確認完了後、KYC を submit（口座/カード基盤のセットアップを起動）
+# After verification, submit the KYC result to start account and card setup
 curl -X POST "$BASE_URL/kyc/submit" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -H "Idempotency-Key: <unique-key>" \
   -d '{ "userId": "<uuid>", "applicantId": "<sumsub-applicant-id>" }'
 ```
 
-## 4. カードを発行
+## 4. Issue a card
 
 ```bash
 curl -X POST "$BASE_URL/card/issue_card" \
@@ -67,21 +66,21 @@ curl -X POST "$BASE_URL/card/issue_card" \
 # => { "data": { ...card }, "code": 0 }
 ```
 
-- `type`: `"virtual"` または `"physical"`
-- `amount`（任意）: 発行と同時にユーザー残高へ載せる入金額。省略時は `0`。
-- `bin`（任意）: 発行する BIN。省略時はその種別を出せる先頭 BIN（サンドボックスの virtual では `537100`）。
-  値域と組み合わせの制約は [endpoints.md の「カード BIN の値域」](endpoints.md#カード-bin-の値域) を参照。
-- **発行価格は Pay3 側（SystemConfig）で一元管理**され、API では指定しません。
-- **発行にはユーザー残高が必要です**（発行価格ぶん）。足りない場合は **400（事前拒否）/ 402（発行途中で
-  徴収が尽きた。カードは Pay3 が閉じます）** の 2 系統で、必要額をハードコードせず `status` / `code` で
-  分岐してください →
-  [endpoints.md「残高が足りないときは 400 と 402 の 2 系統があります」](endpoints.md#残高が足りないときは-400-と-402-の-2-系統があります)
-- **`kyc/submit` は口座/カード基盤のセットアップを「起動」する非同期処理**です。セットアップが終わる前に
-  発行を叩くと **409**（カードは作られません）が返るので、`user.kyc.updated` Webhook か
-  `GET /users/{userId}` の `kycStatus` を確認してから、新しい `Idempotency-Key` で再実行してください。
-- 金銭が動く操作（発行・KYC submit）には必ず [`Idempotency-Key`](idempotency.md) を付けてください。
+| Field | Required | Notes |
+|---|---|---|
+| `userId` | yes | The registered user. |
+| `type` | yes | `virtual` or `physical`. |
+| `amount` | no | Top-up loaded onto the user balance at issuance. Defaults to `0`. Not the issuance price. |
+| `bin` | no | BIN to issue. Defaults to the first BIN that supports the requested form factor (`537100` for virtual in sandbox). See [Endpoints](endpoints.md). |
 
-BIN を指定して発行する場合（例: Visa の Pay3 Card）:
+Points to observe:
+
+- The issuance price is managed by Pay3 and cannot be set through the API.
+- Issuance requires enough user balance to cover the price. Clients that use the optional [partner pool](pool.md) top up user balances with `POST /pool/transfer`. Insufficient balance produces two distinct outcomes: `400` (refused before any card existed) and `402` (the balance ran out mid-issuance; Pay3 closes the card it had just created). Branch on `status` / `code` rather than hard-coding an amount. See [Endpoints](endpoints.md).
+- `kyc/submit` only *starts* account and card setup, asynchronously. Issuing before setup completes returns `409` and no card is created. Wait for the `user.kyc.updated` webhook or check `kycStatus` via `GET /users/{userId}`, then retry with a new `Idempotency-Key`.
+- Always send an [`Idempotency-Key`](idempotency.md) on operations that move money (card issuance, KYC submit).
+
+Issuing with an explicit BIN:
 
 ```bash
 curl -X POST "$BASE_URL/card/issue_card" \
@@ -91,7 +90,9 @@ curl -X POST "$BASE_URL/card/issue_card" \
 # => { "data": { ..., "bin": "45492418" }, "code": 0 }
 ```
 
-発行前に価格を確認したい場合は見積もりを取れます（**金銭は動きません**）:
+## 5. Quote a price
+
+Quotes are informational; no funds move.
 
 ```bash
 curl -X POST "$BASE_URL/card/quote" \
@@ -105,28 +106,29 @@ curl -X POST "$BASE_URL/card/quote" \
 #    }
 ```
 
-- `type` を省略すると `physical` として解決されます。**virtual を見積もるときは必ず `type` を付けてください。**
-- カタログに無い `bin`、その BIN で出せない `type` は **400**（`Unsupported card bin/form factor`）で返ります。
-- **金額（`price` / `total` / `estimated_shipping`）は小数 2 桁固定の「文字列」**です（`"5.00"`。JSON の数値ではありません）。
-  `estimated_shipping` は該当しないとき（virtual、または `country` 未指定）`null` — **「無料」ではなく「対象外」**の意味です。
+- `type` resolves to `physical` when omitted, so always pass `type` to quote a virtual card.
+- A `bin` that is not in the catalog, or a `type` that BIN cannot produce, returns `400` (`Unsupported card bin/form factor`).
+- `price`, `total`, and `estimated_shipping` are **strings** with two fixed decimals (`"5.00"`), not JSON numbers.
+- `estimated_shipping` is `null` when it does not apply (virtual cards, or `country` omitted). `null` means "not applicable", not "free".
 
-## 5. 発行進捗・カード情報を確認
+## 6. Check progress and card details
 
 ```bash
-# 発行進捗イベント（ローディングUI用）
+# Issuance progress events, for a loading UI
 curl -X POST "$BASE_URL/card/issuance_events" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{ "userId": "<uuid>" }'
 
-# 発行済みカード一覧
+# Issued cards
 curl -X POST "$BASE_URL/card/fetch_cards" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{ "userId": "<uuid>" }'
 ```
 
-## 6. イベントを受け取る（任意）
+## 7. Receive events (optional)
 
-カード発行などのイベントを御社システムへ push 受信するには [Webhooks](webhooks.md) を設定してください。
+To have card issuance and other events pushed to your system, configure [Webhooks](webhooks.md).
 
 ---
-次に読む: [Authentication](authentication.md) / [Endpoints](endpoints.md) / [Webhooks](webhooks.md)
+
+Next: [Authentication](authentication.md) · [Endpoints](endpoints.md) · [Webhooks](webhooks.md) · [openapi.yaml](openapi.yaml)
