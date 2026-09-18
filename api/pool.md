@@ -2,6 +2,8 @@
 
 Fund a pool balance up front, then instruct charges from that pool onto the card balances of your own users.
 
+The partner pool is an optional capability, enabled per client by Pay3. If your client does not use a pool, the `/pool/*` endpoints return `404` and you can skip this guide.
+
 All requests require `Authorization: Bearer <accessToken>`.
 
 | Environment | Base URL |

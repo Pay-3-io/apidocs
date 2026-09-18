@@ -206,7 +206,7 @@ Returns transaction history.
 
 ## Partner Pool
 
-Tops up user balances from a pool deposit: balance, transfer instructions and ledger. → **[Partner Pool](pool.md)**
+Tops up user balances from a pool deposit: balance, transfer instructions and ledger. Optional, enabled per client by Pay3. → **[Partner Pool](pool.md)**
 
 - `GET /pool/balance` / `GET /pool/deposit_address`
 - `POST /pool/transfer` (`Idempotency-Key` required)

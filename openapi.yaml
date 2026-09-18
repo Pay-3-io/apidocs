@@ -85,7 +85,7 @@ info:
     Points to observe:
 
     - The issuance price is managed by Pay3 and cannot be set through the API.
-    - Issuance requires enough user balance to cover the price. Insufficient balance produces two distinct outcomes: `400` (refused before any card existed) and `402` (the balance ran out mid-issuance; Pay3 closes the card it had just created). Branch on `status` / `code` rather than hard-coding an amount. See **Endpoints**.
+    - Issuance requires enough user balance to cover the price. Clients that use the optional **partner pool** top up user balances with `POST /pool/transfer`. Insufficient balance produces two distinct outcomes: `400` (refused before any card existed) and `402` (the balance ran out mid-issuance; Pay3 closes the card it had just created). Branch on `status` / `code` rather than hard-coding an amount. See **Endpoints**.
     - `kyc/submit` only *starts* account and card setup, asynchronously. Issuing before setup completes returns `409` and no card is created. Wait for the `user.kyc.updated` webhook or check `kycStatus` via `GET /users/{userId}`, then retry with a new `Idempotency-Key`.
     - Always send an **`Idempotency-Key`** on operations that move money (card issuance, KYC submit).
 
@@ -456,7 +456,7 @@ info:
 
     ## Partner Pool
 
-    Tops up user balances from a pool deposit: balance, transfer instructions and ledger. → ****Partner Pool****
+    Tops up user balances from a pool deposit: balance, transfer instructions and ledger. Optional, enabled per client by Pay3. → ****Partner Pool****
 
     - `GET /pool/balance` / `GET /pool/deposit_address`
     - `POST /pool/transfer` (`Idempotency-Key` required)
@@ -715,6 +715,8 @@ info:
     # Partner Pool
 
     Fund a pool balance up front, then instruct charges from that pool onto the card balances of your own users.
+
+    The partner pool is an optional capability, enabled per client by Pay3. If your client does not use a pool, the `/pool/*` endpoints return `404` and you can skip this guide.
 
     All requests require `Authorization: Bearer <accessToken>`.
 
