@@ -1,23 +1,23 @@
 # Pay3 External (B2B) API
 
-> Pay3 のカード発行・KYC・決済インフラを、御社の UI を保ちながら API 経由で利用するための B2B API。
-> パートナー（B2B クライアント）は OAuth でアクセストークンを取得し、ユーザー登録 → KYC → カード発行 → 利用 の各操作を行う。
+> B2B API for partners who use Pay3's card issuance, identity verification and payment infrastructure behind their own UI.
+> Partners obtain an OAuth access token with their client ID and API key, then register users, run KYC, top up from their pool and issue cards.
 > Base URL (sandbox): https://api-staging.pay-3.io/functions/v1/external-service
-> 全エンドポイントの正規仕様は openapi.yaml を参照。
+> Base URL (production): https://api.pay-3.io/functions/v1/external-service
+> The machine-readable contract for every endpoint is openapi.yaml.
 
-## Docs
+## Guides
 
-- [Quickstart](api/quickstart.md): 認証からカード発行までの最短手順
-- [Authentication](api/authentication.md): OAuth アクセストークンの取得とテナント分離
-- [Endpoints](api/endpoints.md): 全エンドポイントのリファレンス（users / kyc / card / pool / referral-codes）
-- [Users](api/users.md): 自社ユーザーの一覧・照会と段付き KYC 状態
-- [Partner Pool](api/pool.md): プール残高・入金先・チャージ指示・台帳
-- [Referral Codes](api/referral-codes.md): 紹介コードの発行・無効化と登録リンク
-- [Idempotency](api/idempotency.md): Idempotency-Key による二重実行防止
-- [Webhooks](api/webhooks.md): イベント受信・署名検証・リトライ・再配信
-- [Environments](api/environments.md): sandbox / production と動作確認
+- [Quickstart](api/quickstart.md): from access token to a virtual card
+- [Authentication](api/authentication.md): OAuth access tokens, Bearer rules, tenant isolation
+- [Environments](api/environments.md): sandbox vs production, deposit rails, separate credentials
+- [Endpoints](api/endpoints.md): users, KYC, cards, insufficient-balance semantics, error format
+- [Users](api/users.md): listing and looking up your users, KYC stages
+- [Partner Pool](api/pool.md): balance, deposit address, top-up transfers, ledger, source-IP allowlist
+- [Referral Codes](api/referral-codes.md): referral codes and sign-up links
+- [Idempotency](api/idempotency.md): Idempotency-Key semantics
+- [Webhooks](api/webhooks.md): events, signature verification, retries
 
-## Specs
+## Reference
 
-- [OpenAPI](openapi.yaml): 機械可読な API 仕様 (OpenAPI 3.0.3)
-- [API Reference](reference.html): OpenAPI を Scalar で描画した対話型リファレンス
+- [OpenAPI](openapi.yaml): OpenAPI 3.0.3 specification

@@ -1,26 +1,25 @@
 # Webhooks
 
-Pay3 で発生したイベント（カード発行など）を、御社のエンドポイントへ **push 配信**します。ポーリング不要でリアルタイムに状態を同期できます。
+Events that occur in Pay3, such as card issuance, are pushed to your endpoint, so you can stay in sync without polling.
 
-## 設定
+## Configuration
 
-受信エンドポイントと署名鍵は、**コンソールの「開発者 → Webhook」**で御社自身が登録・表示・再発行できます
-（API キーからは操作できません）。
-- 受信エンドポイント（HTTPS）と任意の説明（例: 本番の受信サーバー）
-- 購読するイベント（下の「イベント種別」から選択。既定は全部。`ping` は購読設定に関係なく届きます）
-- 署名検証用シークレット（登録時に発行。コンソールの鍵アイコンで**いつでも表示**でき、再発行すると旧鍵は即時失効）
-- 購読していないイベントは配信されず、配信ログにも載りません
+The receiving endpoint and the signing key are managed under **Developer → Webhooks** in the partner console.
 
-## 配信フォーマット
+- The receiving endpoint (HTTPS) and an optional description.
+- The events you subscribe to, chosen from [Event types](#event-types). All are selected by default, and `ping` is delivered regardless. Unsubscribed events are not delivered and do not appear in the delivery log.
+- The signing key, issued with the endpoint. It can be revealed at any time in the console, and reissuing it invalidates the previous key immediately.
 
-`webhook_url` に対し `POST`（JSON）で配信されます。
+## Delivery format
 
-ヘッダ:
-- `X-Pay3-Event`: イベント種別（例 `card.issued`）
-- `X-Pay3-Delivery`: 配信ID（再送時も同一）
-- `X-Pay3-Signature`: 署名（後述）
+Events are delivered as a `POST` with a JSON body to the registered URL.
 
-ボディ:
+| Header | Contents |
+|---|---|
+| `X-Pay3-Event` | Event type, for example `card.issued` |
+| `X-Pay3-Delivery` | Delivery id (unchanged across retries) |
+| `X-Pay3-Signature` | Signature (see below) |
+
 ```json
 {
   "id": "<delivery-uuid>",
@@ -30,14 +29,12 @@ Pay3 で発生したイベント（カード発行など）を、御社のエン
 }
 ```
 
-`data` の項目は**イベントごとに定義された項目のみ**です（下表）。カード基盤・本人確認基盤の
-生レスポンスを中継することはありません。
+`data` contains only the fields defined for that event type. Raw responses from the card platform or the identity verification provider are never relayed.
 
-## 署名検証（必須）
+## Signature verification
 
-`X-Pay3-Signature` は **受信した生ボディ**に対する HMAC-SHA256（hex）です。鍵は `webhook_secret`。
+`X-Pay3-Signature` is an HMAC-SHA256 (hex) over the raw body as received, keyed with the webhook secret. Verification is required; discard any request that fails it.
 
-検証例（Node.js）:
 ```js
 import crypto from "node:crypto";
 
@@ -47,90 +44,59 @@ function verify(rawBody, signature, secret) {
 }
 ```
 
-検証に失敗したリクエストは破棄してください（なりすまし防止）。
+## Retries
 
-## リトライ
+- A `2xx` response counts as a successful delivery.
+- `5xx`, a 10-second timeout, and connection failures are retried with exponential backoff, up to 6 times. Retries run on a 5-minute cycle, so arrival can be up to 5 minutes later than the table below.
+- `4xx` responses are not retried, because resending the same payload would not change the outcome; the delivery is marked `failed` immediately. `408`, `425`, and `429` are the exceptions and are retried.
 
-- 2xx 応答（200 / 204 など）で配信成功とみなします。
-- **5xx・10 秒のタイムアウト・接続不能**は一時的な失敗として、**指数バックオフ**で**最大 6 回まで自動再送**します。
-  再送は Pay3 側のスケジューラが **5 分周期**で実行するため、実際の到着は下表の目安から最大 5 分遅れることがあります。
-- **4xx（400 / 401 / 404 / 409 など）は再送しません**。同じ内容を送り直しても結果は変わらないため、その場で
-  `failed` として確定します（408 / 425 / 429 だけは一時的とみなして再送します）。
-  受信側で署名検証や送信元の確認に失敗している場合は、設定を直してから API で状態を照会してください。
+| Retry | 1st | 2nd | 3rd | 4th | 5th | 6th (last) |
+|---|---|---|---|---|---|---|
+| Wait since the previous failure | 30 s | 60 s | 2 min | 4 min | 8 min | 16 min |
 
-  | 再送 | 直前の失敗からの待ち時間 |
-  |---|---|
-  | 1 回目 | 30 秒 |
-  | 2 回目 | 60 秒 |
-  | 3 回目 | 2 分 |
-  | 4 回目 | 4 分 |
-  | 5 回目 | 8 分 |
-  | 6 回目（最終） | 16 分 |
+The wait is 30 seconds × 2^(retry − 1), capped at 1 hour. After 6 failed retries the delivery is marked `failed` — at most 7 attempts including the first. Recover anything you missed from the API (`GET /pool/ledger`, `GET /pool/transfers`, `GET /users/list`).
 
-  待ち時間は 30 秒 × 2^(再送回数 − 1) で、上限は 1 時間です。**6 回の再送とも失敗**した配信は
-  そこで打ち切られ（`failed`）、以降は自動再送されません（初回配送を含めた配信試行は最大 7 回です）。
-  **取りこぼした分の正本は API 側で**照会してください
-  （`GET /pool/ledger`・`GET /pool/transfers`・`GET /users/list`）。
-- 受信側は**冪等に**処理してください（ボディの `id` = `X-Pay3-Delivery` で重複排除）。再送は
-  **同じ `id`・同じバイト列**で届きます。`created_at` は再送時刻ではなく**元の状態が変わった時刻**（初回送出時に固定）なので、
-  再送で変わりません。
+Process deliveries idempotently, de-duplicating on the body's `id` (equal to `X-Pay3-Delivery`). A retry arrives with the same `id` and the same bytes. `created_at` is the time the underlying state changed, fixed at first dispatch, so it does not change on retry.
 
-## 配信状態（status）の語彙
+## Delivery status
 
-Pay3 側は配信ごとに以下の状態を記録しています。お問い合わせの際もこの語でご回答します。
-
-| 状態 | 意味 |
+| State | Meaning |
 |---|---|
-| `pending` | 配信待ち（初回、または再試行の待機中） |
-| `delivered` | 2xx を受け取った（配信成功） |
-| `failed` | **実際に配信を試みて**失敗し、再送の上限（6 回）に達した |
-| `skipped_no_endpoint` | `webhook_url` が未登録だったため、**一度も配信を試みていない** |
+| `pending` | Waiting to be delivered (first attempt, or waiting for a retry) |
+| `delivered` | A `2xx` was received |
+| `failed` | Delivery was attempted and failed, and the retry limit (6) was reached |
+| `skipped_no_endpoint` | No endpoint was registered, so delivery was never attempted |
 
-`skipped_no_endpoint` は配信の失敗ではありません。`webhook_url` の登録**前**に発生した
-イベントがこれに当たります。**登録後にまとめて再送されることはありません**（下記の
-イベント種別の注記を参照）。
+`skipped_no_endpoint` is not a delivery failure. Only events that occur after an endpoint is registered are delivered; earlier events are recorded this way and are never re-sent, so read them back from the API.
 
-## イベント種別
+## Event types
 
-| イベント | 送出タイミング | `data` の項目 | 状況 |
-|---|---|---|---|
-| `user.registered` | 貴社経由の新規登録 | `userId, email, name, partnerRefCode, registeredAt` | 提供中 |
-| `user.kyc.updated` | 本人確認のいずれかの段の結果が変わった | `userId, kycStatus, stage, stageStatus, updatedAt` | 提供中 |
-| `card.issued` | バーチャルカード発行 | `userId, cardId, cardType, issuedAt` | 提供中 |
-| `card.activated` | リアルカードのアクティブ化 | `userId, cardId, cardType, activatedAt` | 提供中 |
-| `pool.deposit.credited` | プール入金の反映 | `referenceId, grossAmount, feeAmount, netAmount, available, currency, transactionHash, chain, sourceAddress, creditedAt` | 提供中 |
-| `pool.transfer.completed` | チャージ反映完了 | `transferId, userId, amount, settledAt` | 提供中 |
-| `pool.transfer.failed` | チャージ失敗・残高返還 | `transferId, userId, amount, reason, compensatedAt` | 提供中 |
+| Event | Emitted when | `data` fields |
+|---|---|---|
+| `user.registered` | A new user signs up through your referral link | `userId, email, name, partnerRefCode, registeredAt` |
+| `user.kyc.updated` | The result of either verification stage changes | `userId, kycStatus, stage, stageStatus, updatedAt` |
+| `card.issued` | A virtual card is issued | `userId, cardId, cardType, issuedAt` |
+| `card.activated` | A physical card is activated | `userId, cardId, cardType, activatedAt` |
+| `pool.deposit.credited` | A pool credit is applied | `referenceId, grossAmount, feeAmount, netAmount, available, currency, transactionHash, chain, sourceAddress, creditedAt` |
+| `pool.transfer.completed` | A charge is applied | `transferId, userId, amount, settledAt` |
+| `pool.transfer.failed` | A charge fails and the amount is returned | `transferId, userId, amount, reason, compensatedAt` |
 
-- `user.registered` は**ブラウザの `?ref=` サインアップ経路でのみ発火します**。`POST /users/register`
-  経由の登録は同期レスポンスで `userId` が返るため、本イベントは発火しません
-- `user.registered` の `partnerRefCode` は、`GET /users/list` が同じユーザーに対して返す
-  `referralCode` と**同じ値**です（登録時に確定した貴社の紹介コード）。名前が二形あるのは
-  経路ごとの綴りの違いで、突き合わせは値でそのまま行えます
-- `user.kyc.updated` は本人確認の **2 段**（一次本人確認 `identity` / カード発行体の審査 `card_issuer`）の
-  どちらかの結果が変わるたびに送られます。`stage` がどの段か、`stageStatus` がその段の新しい状態
-  （`approved` / `rejected` / `pending`）、`kycStatus` が**総合**（`approved` = チャージ指示・カード発行が
-  通る状態。[users.md](users.md#kycstatus-と-kyc段ごとの状態) の判定表と同じ）です。
-  一次が承認された時点では `stage=identity, stageStatus=approved` でも **`kycStatus` は `pending`** です。
-  カードを発行できるようになったことを知りたい場合は **`kycStatus` が `approved` になったイベント**を待ってください
-  ```json
-  { "userId": "<uuid>", "kycStatus": "pending",  "stage": "identity",    "stageStatus": "approved", "updatedAt": "..." }
-  { "userId": "<uuid>", "kycStatus": "approved", "stage": "card_issuer", "stageStatus": "approved", "updatedAt": "..." }
-  ```
-- `pool.deposit.credited` はユーザーに紐づかないので `data.userId` はありません。`referenceId` は `<chain>:<transactionHash>`
-  （台帳 `GET /pool/ledger` の `deposit` 行の `referenceId` と同じ値）。`available` は反映直後のプール残高です
-- `card.activated` はリアルカードのみ（`cardType` は `physical` 固定）。バーチャルカードは
-  発行 = 即利用可能のため `card.issued` のみが送られます
-- **サンドボックスでの `card.activated` の扱い**: リアルカード用 BIN がサンドボックスで未解放の
-  ため、`card.activated` はサンドボックスでは**実発火を確認できません**（発火点は物理カードの
-  アクティブ化成功時のみで、再アクティブ化では送出しません）。ペイロード形状と発火条件は単体
-  テストで固定してありますが、**実配信の確認は本番の BIN 解放後**に行います
-- 配信されるのは **`webhook_url` を登録した以降に発生したイベント**のみです。登録前に発生した
-  分は `skipped_no_endpoint` として記録され、**登録後も再送されません**（過去分は
-  `GET /pool/ledger`・`GET /users/list` 等の API で照会できます）
+**`user.registered`** fires only for browser sign-ups carrying `?ref=`; `POST /users/register` does not emit it, because its response already returns `userId`. `partnerRefCode` is the same value that `GET /users/list` returns as `referralCode` for that user, so the two can be compared directly.
 
-## 再配信・テスト
+**`user.kyc.updated`** covers two stages — first-line identity verification (`identity`) and the card issuer's own review (`card_issuer`) — and is sent whenever either changes. `stage` is the stage that changed and `stageStatus` its new status (`approved`, `rejected`, `pending`). `kycStatus` is the overall status, where `approved` means charge instructions and card issuance will pass (same rules as [Users](users.md)). When only the first stage is approved, `kycStatus` is still `pending`, so wait for the event where `kycStatus` becomes `approved`.
 
-- テスト配信: コンソール「開発者 → Webhook」の「テスト送信」で `ping` イベントを 1 通配信します。到達は同じ画面の配信ログで確認できます。
-- 失敗した配信は Pay3 側が **5 分周期で自動再送**します（上記のリトライ回数まで）。手動での再配信が必要な場合は
-  配信ログの `id` を添えて Pay3 にご連絡ください。
+```json
+{ "userId": "<uuid>", "kycStatus": "pending",  "stage": "identity",    "stageStatus": "approved", "updatedAt": "..." }
+{ "userId": "<uuid>", "kycStatus": "approved", "stage": "card_issuer", "stageStatus": "approved", "updatedAt": "..." }
+```
+
+**`card.activated`** applies to physical cards only, so `cardType` is always `physical`. It fires on successful activation and not on re-activation. Virtual cards are usable as soon as they are issued and emit `card.issued` only.
+
+**`pool.deposit.credited`** is not tied to a user, so there is no `data.userId`. `referenceId` is `<chain>:<transactionHash>`, the same value as `referenceId` on the `deposit` row in `GET /pool/ledger` ([Partner Pool](pool.md)). `available` is the pool balance immediately after the credit.
+
+## Test delivery and redelivery
+
+- **Send test** under Developer → Webhooks delivers a single `ping` event. Its arrival is visible in the delivery log on the same screen.
+- Failed deliveries are retried automatically every 5 minutes, up to the retry limit above. For a manual redelivery, contact Pay3 with the delivery `id` from the log.
+
+The machine-readable API reference is `openapi.yaml`.

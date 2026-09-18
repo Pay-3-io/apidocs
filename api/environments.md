@@ -1,33 +1,43 @@
 # Environments
 
-| 環境 | 用途 | 外部連携 | Base URL |
-|---|---|---|---|
-| **sandbox (Development)** | 御社の結合テスト用。偽カード・偽KYCで安全に試せる | カード基盤サンドボックス / Sumsub sandbox | `https://api-staging.pay-3.io/functions/v1/external-service` |
-| **production** | 本番 | カード基盤本番 / Sumsub 本番 | `https://api.pay-3.io/functions/v1/external-service` |
+Pay3 provides two independent environments: a sandbox for integration testing and production for live traffic.
 
-いずれも**ベース URL は末尾の `/external-service` まで含みます**（仕様書 §2 と同じ定義）。
-API のパスはすべてそのベース URL の直下です（例: `GET {BASE_URL}/pool/balance`）。
+## Base URLs
 
-## sandbox の使い方
+| Environment | Purpose | Base URL |
+|---|---|---|
+| **sandbox (Development)** | Integration testing against test cards and test identity verification. No real charges and no real cards. | `https://api-staging.pay-3.io/functions/v1/external-service` |
+| **production** | Live traffic. | `https://api.pay-3.io/functions/v1/external-service` |
 
-1. Pay3 からパートナーコンソール（sandbox: `https://console-staging.pay-3.io`）の招待を受け取り、「開発者」メニューで
-   クライアント ID を確認し、API キーを発行して、送信元 IP を登録する。
-2. [Quickstart](quickstart.md) の手順を sandbox Base URL に対して実行。
-3. カード発行・KYC は sandbox プロバイダに対して行われ、実課金・実発行は起きません。
-4. プールへの入金は **USDC / Ethereum Sepolia（テストネット）のみ**です。入金先アドレスと通貨・チェーンは
-   `GET /pool/deposit_address` とコンソールの「プール」に表示されます（[pool.md](pool.md)）。
-   本番は USDT / TRON です。**表示された通貨・チェーン以外を同じアドレスへ送ると着金しません。**
+Both base URLs include the trailing `/external-service`. All API paths sit directly beneath the base URL, for example `GET {BASE_URL}/pool/balance`.
 
-## 動作確認のおすすめ順
+## Getting started in sandbox
 
-1. `oauth/access-token` でトークン取得（認証の疎通）
-2. `users/register` でユーザー作成
-3. `kyc/access-token` → 本人確認 → `kyc/submit`
-4. `card/issue_card`（`Idempotency-Key` 付き）
-5. `card/issuance_events` / `fetch_cards` で結果確認
-6. Webhook を設定して `webhooks/test` で受信確認
+1. Accept the invitation to the partner console for sandbox (`https://console-staging.pay-3.io`). In the **Developer** menu, look up your client ID, issue an API key, and register your source IPs.
+2. Run the [Quickstart](quickstart.md) steps against the sandbox base URL.
+3. Card issuance and identity verification run against sandbox providers, so nothing is charged and no real card is produced.
 
-## 注意
+## Pool deposits
 
-- sandbox と production は**別々のクライアント資格情報**（`pay3_sk_test_…` / `pay3_sk_live_…`）です。混在させないでください。
-- production のクレデンシャル・Webhook secret はサーバー側のみで管理してください。
+| Environment | Asset | Network |
+|---|---|---|
+| sandbox | USDC | Ethereum Sepolia (testnet) |
+| production | USDT | TRON |
+
+The deposit address, asset, and network are shown by `GET /pool/deposit_address` and in the console's **Pool** screen ([Pool](pool.md)). Sending any other asset or network to that address will not credit your pool.
+
+## Suggested verification order
+
+1. `oauth/access-token` — confirm authentication works.
+2. `users/register` — create a user.
+3. `kyc/access-token` → complete verification → `kyc/submit`.
+4. `card/issue_card` with an `Idempotency-Key`.
+5. `card/issuance_events` and `card/fetch_cards` — confirm the result.
+6. Register a webhook endpoint in the console's **Developer** menu and use **Send test** to confirm delivery ([Webhooks](webhooks.md)).
+
+## Notes
+
+- Sandbox and production use **separate client credentials** (`pay3_sk_test_…` and `pay3_sk_live_…`). Do not mix them.
+- Keep production credentials and webhook signing keys server-side only.
+
+See also: [Authentication](authentication.md) · [openapi.yaml](openapi.yaml)
