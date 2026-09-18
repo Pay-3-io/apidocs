@@ -24,7 +24,7 @@ Base URL (sandbox): `https://api-staging.pay-3.io/functions/v1/external-service`
 
 ## 送信元 IP（ホワイトリスト）
 
-API キーで取得したトークンでの呼び出しは、**コンソール「開発者 → 送信元 IP」（または `PUT /developer/ip-allowlist`）に
+API キーで取得したトークンでの呼び出しは、**コンソール「開発者 → 送信元 IP」に
 登録した IP からのみ**受け付けます。sandbox / 本番とも同じです。
 
 - 1 件も登録していない間は、どのエンドポイントも `403 ip_not_registered` です（コンソールの操作は対象外なので、

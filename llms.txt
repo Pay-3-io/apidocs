@@ -9,7 +9,7 @@
 
 - [Quickstart](api/quickstart.md): 認証からカード発行までの最短手順
 - [Authentication](api/authentication.md): OAuth アクセストークンの取得とテナント分離
-- [Endpoints](api/endpoints.md): 全エンドポイントのリファレンス（users / kyc / card / pool / referral-codes / developer）
+- [Endpoints](api/endpoints.md): 全エンドポイントのリファレンス（users / kyc / card / pool / referral-codes）
 - [Users](api/users.md): 自社ユーザーの一覧・照会と段付き KYC 状態
 - [Partner Pool](api/pool.md): プール残高・入金先・チャージ指示・台帳
 - [Referral Codes](api/referral-codes.md): 紹介コードの発行・無効化と登録リンク
@@ -20,4 +20,4 @@
 ## Specs
 
 - [OpenAPI](openapi.yaml): 機械可読な API 仕様 (OpenAPI 3.0.3)
-- [API Reference](index.html): OpenAPI + ガイドを Scalar で描画した対話型リファレンス（ガイドは Introduction 配下）
+- [API Reference](reference.html): OpenAPI を Scalar で描画した対話型リファレンス
