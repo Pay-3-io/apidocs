@@ -228,7 +228,7 @@ info:
     | sandbox | USDC | Ethereum Sepolia (testnet) |
     | production | USDT | TRON |
 
-    The deposit address, asset, and network are shown by `GET /pool/deposit_address` and in the console's **Pool** screen (**Pool**). Sending any other asset or network to that address will not credit your pool.
+    The deposit address, asset, and network are shown by `GET /pool/deposit_address` and in the console's **Pool** screen (**Pool**). Sending any other asset or network to that address will not credit your pool. Each deposit must be at least 50.
 
     ## Suggested verification order
 
@@ -794,6 +794,7 @@ info:
     | Production | USDT on TRON |
 
     - Use the returned `currency` and `network` pair as given. Any other asset sent to the address does not arrive; it can be neither detected nor refunded.
+    - **Each deposit must be at least 50** (USDC or USDT). A deposit below 50 is not credited to the pool and is not refunded automatically; contact Pay3 if this happens.
     - Sandbox exercises the whole path — address, credit, ledger row, webhook — but it is a different rail from production. Testnet USDC is available from public faucets.
     - If `network` is `SANDBOX` and `address` starts with `0xSANDBOX_`, no real address has been issued yet. Do not send funds to it.
     - `409` — no deposit address has been issued. Do not send funds.
@@ -1047,7 +1048,7 @@ info:
         ]
       }
       ```
-    - `link` is the sign-up link carrying the code: `https://app2.pay-3.io/?ref=<code>` in sandbox, `https://app.pay-3.io/?ref=<code>` in production.
+    - `link` is the sign-up link carrying the code. Use the value as returned; the host differs between sandbox and production.
     - **No query parameters are accepted.** Any parameter returns `400` with a body such as `Unknown query parameter "enabled". Accepted: (none)`, so a filter that looks applied but is not can never be mistaken for a complete list. There is no paging and no filtering.
 
     ## POST /referral-codes
@@ -3659,8 +3660,8 @@ components:
         label: { type: string, nullable: true }
         link:
           type: string
-          description: Signup link that carries the code. Sandbox uses `app2.pay-3.io`.
-          example: "https://app2.pay-3.io/?ref=PARTNER-A"
+          description: Sign-up link that carries the code. Use the value as returned; the host differs between sandbox and production.
+          example: "https://app.pay-3.io/?ref=PARTNER-A"
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
 
