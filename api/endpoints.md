@@ -104,6 +104,31 @@ Prices an issuance before you commit to it. **No funds move** — the call is pu
 
 - 400: unsupported `bin` / `type` combination (`{ "message": "Unsupported card bin/form factor: <bin>/<form factor>", "code": 400 }`).
 
+### GET /card/catalog
+
+Lists the cards your users can be issued, with the price that applies when no other price is set. Use it to find the `bin` / `type` pairs for [card prices per code](referral-codes.md#card-prices-per-code). Scope: `card:read`.
+
+```bash
+curl -s "$BASE_URL/card/catalog" -H "Authorization: Bearer $TOKEN"
+```
+
+- No body and no `userId`. **No query parameters are accepted**; any parameter returns `400` (`Unknown query parameter "<name>". Accepted: (none)`).
+- 200: `{ data: [{ bin, type, name, defaultPrice }] }`
+  - One entry per BIN and `type` (`"virtual"` \| `"physical"`) that is enabled in the [card BIN catalog](#card-bins) and available to your client.
+  - `name` is the card's display name.
+  - `defaultPrice` is the issuance price for a user who has no price of their own — for example a user whose referral code has no `cardPrices` entry for that card. It is your client's default price, or the standard Pay3 price when your client has none. It is a **fixed 2-decimal string**, like `price` in `/card/quote`.
+  - Issuance costs are never returned.
+
+```json
+{ "data": [
+  { "bin": "45492418", "type": "virtual", "name": "Pay3 Card", "defaultPrice": "5.00" }
+] }
+```
+
+- 500 `Failed to fetch card catalog`: the catalog or its prices could not be read. Nothing partial or estimated is returned; retry.
+
+Restrictions Pay3 sets for an individual user can still narrow what that user can be issued; `POST /card/quote` returns the exact price for a given user.
+
 ### POST /card/issue_card
 
 Issues a card. **Idempotent** — an [Idempotency-Key](idempotency.md) is strongly recommended. KYC must be complete.
@@ -152,7 +177,7 @@ Accepted `bin` values come from the Pay3 card BIN catalog, which is fail-closed:
 | `45492418` | Visa / Pay3 Card | virtual |
 | `49387519` | Visa / White Card | physical |
 
-Each BIN supports specific form factors, so a `bin` / `type` combination the catalog does not allow returns 400 (never 500). Production values are provided separately.
+Each BIN supports specific form factors, so a `bin` / `type` combination the catalog does not allow returns 400 (never 500). Production values are provided separately. `GET /card/catalog` returns the `bin` / `type` pairs available to your client in the environment you call.
 
 ### POST /card/issuance_events
 
@@ -213,16 +238,18 @@ Tops up user balances from a pool deposit: balance, transfer instructions and le
 - `GET /pool/transfer/{transferId}` / `GET /pool/transfers` (`status` / `userId` / `from` / `to` / `limit` / `offset`)
 - `GET /pool/ledger` (`type` / `from` / `to` / `limit` / `offset`)
 
-The list endpoints (`/pool/transfers`, `/pool/ledger`, `/users/list`, `GET /referral-codes`) accept **a fixed set of parameter names and reject anything else with 400**, so a misspelling never comes back as an unfiltered `200` (see [Query parameter validation](pool.md#query-parameter-validation)).
+The list endpoints (`/pool/transfers`, `/pool/ledger`, `/users/list`, `GET /referral-codes`, `GET /card/catalog`) accept **a fixed set of parameter names and reject anything else with 400**, so a misspelling never comes back as an unfiltered `200` (see [Query parameter validation](pool.md#query-parameter-validation)).
 
 `from` and `to` filter on `createdAt`. **A date-only value is interpreted in UTC and `to` covers the whole day**, so a single day is `?from=2026-09-15&to=2026-09-15` (see [Date boundaries](pool.md#date-boundaries)).
 
 ## Referral Codes
 
-Register, enable, disable and delete referral codes, and attribute users to them. → **[Referral Codes](referral-codes.md)**
+Register, enable, disable and delete referral codes, attribute users to them, and set a card issuance price and a deposit fee rate per code. → **[Referral Codes](referral-codes.md)**
 
-- `GET /referral-codes` / `POST /referral-codes`
-- `PATCH /referral-codes/{code}` / `DELETE /referral-codes/{code}`
+- `GET /referral-codes` / `POST /referral-codes` (`cardPrices` / `depositFeeRate` optional)
+- `PATCH /referral-codes/{code}` (`enabled` / `cardPrices` / `depositFeeRate`, at least one) / `DELETE /referral-codes/{code}`
+
+The card price and deposit fee rate set on a code apply to every user who signed up with that code. The cards you can price, and the price that applies otherwise, come from `GET /card/catalog`.
 
 `POST /users/register` accepts a `referral_code`.
 
@@ -247,7 +274,7 @@ Secrets — API keys and signing keys — are shown in clear text only once, at 
 
 Unrecognised paths and unsupported HTTP methods return a **JSON 404**. This holds for `/pool/*`, `/referral-codes*`, `/users/*` and `/oauth/*`.
 
-`/kyc/*` and `/card/*` resolve the `userId` in the body before routing on the path, so what an unknown sub-path or unsupported method returns there depends on the body you sent:
+`/kyc/*` and `/card/*` (except `GET /card/catalog`, which takes no body) resolve the `userId` in the body before routing on the path, so what an unknown sub-path or unsupported method returns there depends on the body you sent:
 
 | Body sent | Response from `/card/<unknown>` or `/kyc/<unknown>` |
 |---|---|
