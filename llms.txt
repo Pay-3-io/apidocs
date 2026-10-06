@@ -11,10 +11,10 @@
 - [Quickstart](api/quickstart.md): from access token to a virtual card
 - [Authentication](api/authentication.md): OAuth access tokens, Bearer rules, tenant isolation
 - [Environments](api/environments.md): sandbox vs production, deposit rails, separate credentials
-- [Endpoints](api/endpoints.md): users, KYC, cards, insufficient-balance semantics, error format
+- [Endpoints](api/endpoints.md): users, KYC, cards, card catalog, insufficient-balance semantics, error format
 - [Users](api/users.md): listing and looking up your users, KYC stages
 - [Partner Pool](api/pool.md): balance, deposit address, top-up transfers, ledger, source-IP allowlist
-- [Referral Codes](api/referral-codes.md): referral codes and sign-up links
+- [Referral Codes](api/referral-codes.md): referral codes, sign-up links, card issuance price and deposit fee rate per code
 - [Idempotency](api/idempotency.md): Idempotency-Key semantics
 - [Webhooks](api/webhooks.md): events, signature verification, retries
 
