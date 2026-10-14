@@ -16,13 +16,15 @@ The base URL includes the trailing `/external-service`; the paths below sit dire
 | Scope | Covers |
 |---|---|
 | `users:status` | `GET /users/list` and `GET /users/{userId}` (`users:read` satisfies it automatically) |
+| `users:invite` | `PUT /users/{userId}/invite` (`users:write` satisfies it automatically) |
 
 ## Visibility
 
 You see only the users attributed to your client. A user is attributed when either of the following holds:
 
 1. They signed up through a link carrying one of your referral codes (the same users the `user.registered` webhook reports). Attribution is fixed at sign-up and does not change if the code is later disabled or deleted.
-2. You created them with `POST /users/register`.
+2. They signed up through the invite link of a user in (1), at any depth. They inherit that user's referral code unchanged, and are part of the same set with no extra step.
+3. You created them with `POST /users/register`.
 
 This set is **identical** across `GET /users/list`, `GET /users/{userId}` and `POST /pool/transfer` ([Partner Pool](pool.md)): a user that appears in the list can always be looked up and can always be sent a top-up instruction (other conditions, such as KYC, still apply).
 
@@ -47,14 +49,17 @@ curl -s "$BASE_URL/users/list?limit=50&offset=0" \
         "referralCode": "PARTNER-A",
         "kycStatus": "approved",
         "kyc": { "identity": { "status": "approved" }, "cardIssuer": { "status": "approved" } },
-        "cardStatus": "issued"
+        "cardStatus": "issued",
+        "inviteCode": "K7M2Q9XA",
+        "invitedByUserId": null,
+        "inviteEnabled": false
       }
     ],
     "paging": { "limit": 50, "offset": 0, "total": 1 }
   }
   ```
 - With no matching users the response is `{"data": [], "paging": {"limit":50,"offset":0,"total":0}}`. An empty result is not a `404`.
-- 400: invalid `limit` / `offset`, or an unaccepted parameter name.
+- 400: invalid `limit` / `offset` / `referralCode` / `kycStatus`, or an unaccepted parameter name.
 - 403: missing scope.
 
 | Field | Meaning |
@@ -65,6 +70,9 @@ curl -s "$BASE_URL/users/list?limit=50&offset=0" \
 | `kycStatus` | Overall status. Same vocabulary and same evaluation as `GET /users/{userId}` (see [kycStatus and kyc](#kycstatus-and-kyc)) |
 | `kyc` | Per-stage status `{ identity: { status }, cardIssuer: { status } }` (same as above) |
 | `cardStatus` | Summary of card issuance: `issued` or `not_issued` |
+| `inviteCode` | The user's own invite code, issued by Pay3 at sign-up (the code their invite link carries) |
+| `invitedByUserId` | The user who invited them. `null` for users who signed up with a referral code directly, or were created through `POST /users/register` |
+| `inviteEnabled` | Whether you have enabled this user's invite link (see [PUT /users/{userId}/invite](#put-usersuseridinvite)). `false` for users created through `POST /users/register` |
 
 `cardStatus` is a summary flag taken from Pay3's own records. The list performs no per-user card lookup, so a slow or unavailable card platform never blocks it. Card count, form factor and states such as `frozen` come from `cards` in `GET /users/{userId}`.
 
@@ -76,9 +84,25 @@ curl -s "$BASE_URL/users/list?limit=50&offset=0" \
 | `offset` | `0` | decimal integer, 0 or greater | `400`. An `offset` past the total returns a `200` empty page (`"data": []`, `total` unchanged) |
 
 - Ordering is fixed: newest `registeredAt` first, ties broken by `userId`. Because the order is fixed, advancing `offset` neither skips nor repeats rows.
-- `paging.total` is the number of users attributed to you, before `limit` is applied.
-- `limit` and `offset` are **the only accepted parameters**, and names are case-sensitive. Any other name (including a misspelling such as `?userid=`) returns `400`, with the accepted names listed in the body; an unrecognised filter is never silently dropped and returned as an unfiltered `200` (see [Query parameter validation](pool.md#query-parameter-validation)).
-- Filtering (by referral code, for example), sort options and CSV export are not currently offered.
+- `paging.total` is the number of users attributed to you that match the filters below, before `limit` is applied.
+- `limit`, `offset`, `referralCode` and `kycStatus` are **the only accepted parameters**, and names are case-sensitive. Any other name (including a misspelling such as `?userid=`) returns `400`, with the accepted names listed in the body; an unrecognised filter is never silently dropped and returned as an unfiltered `200` (see [Query parameter validation](pool.md#query-parameter-validation)).
+- Sort options and CSV export are not currently offered.
+
+### Filters
+
+Both filters are optional and can be combined (a user must match both). An empty value (`?kycStatus=`) means no filter.
+
+| Parameter | Matches | On an invalid value |
+|---|---|---|
+| `referralCode` | Users who signed up with this code. Case-insensitive exact match; wildcards carry no meaning. A deleted code still matches the users attributed to it | `400` when the value is not 3–64 characters of `A-Z`, `a-z`, `0-9`, `-` and `_`. A well-formed code that is not one of yours returns a `200` empty page |
+| `kycStatus` | Users whose `kycStatus` field has this value: `not_submitted`, `pending`, `approved` or `rejected` | `400`, with the accepted values listed in the body |
+
+```bash
+curl -s "$BASE_URL/users/list?referralCode=PARTNER-A&kycStatus=approved" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+Users created through `POST /users/register` without a referral code never match a `referralCode` filter. Per-code totals are available from [`GET /referral-codes/stats`](referral-codes.md#get-referral-codesstats).
 
 ### Reading every page
 
@@ -118,11 +142,15 @@ curl -s "$BASE_URL/users/$USER_ID" \
     "cards": [
       { "cardType": "virtual", "status": "active" },
       { "cardType": "physical", "status": "shipped" }
-    ]
+    ],
+    "inviteCode": "K7M2Q9XA",
+    "invitedByUserId": null,
+    "inviteEnabled": false
   }
   ```
   - A user with no cards returns `"cards": []`, never `null`.
   - Card number, CVV, BIN, billing address, name and email are not included.
+  - `inviteCode`, `invitedByUserId` and `inviteEnabled` mean the same as in [`GET /users/list`](#get-userslist).
 - 403: missing scope.
 - 404: the user id is not attributed to you, or does not exist.
 - 502: card issuance status could not be retrieved. This is distinct from "no cards" — retry rather than treating it as an empty list.
@@ -183,6 +211,32 @@ The overall `kycStatus` is derived as follows.
 
 - `frozen` takes precedence over the form-factor state: an activated physical card that is locked also reports `frozen`.
 - Cancelled and deactivated cards are not listed.
+
+## PUT /users/{userId}/invite
+
+Enables or disables a user's invite link. While disabled (the default for every user), the user's Friends screen shows only "The program hasn't started yet. Please ask the person who invited you for details." Once enabled, it shows their invite link and QR code. Pay3 applies no other condition (KYC or otherwise) — whether to enable is your decision.
+
+People who sign up through that link become your users and inherit the inviter's referral code; the direct inviter is recorded as `invitedByUserId` (see [`user.registered`](webhooks.md)). While a user's invite link is disabled, their invite code is treated as invalid: anyone who signs up with it is registered without a referral and does not become your user. Disabling does not change users who have already signed up; they keep their attribution.
+
+```bash
+curl -s -X PUT "$BASE_URL/users/$USER_ID/invite" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}'
+```
+
+- Body: `{"enabled": true}` or `{"enabled": false}`. `enabled` is the only accepted key.
+- 200:
+  ```json
+  { "userId": "5c3ff529-0000-4000-8000-000000000000", "inviteCode": "K7M2Q9XA", "invitedByUserId": null, "inviteEnabled": true }
+  ```
+  Repeating the same value also returns `200` (the request is idempotent, so no `Idempotency-Key` is needed).
+- 400: `enabled must be a boolean` — `enabled` is missing or not a boolean, or the body has other keys.
+- 403: `Insufficient scope: users:invite required`. Clients holding `users:write` satisfy it automatically; clients with no scopes configured do not.
+- 404: the user id is not attributed to you, or does not exist.
+- 409: `invite_not_available: this user was created without a referral code` — users created through `POST /users/register` without a referral code have no referral code to pass on, so their invite cannot be enabled.
+
+The current state is also returned as `inviteEnabled` by `GET /users/list` and `GET /users/{userId}`. Changing it does not emit a webhook.
 
 ## The separate `GET /users?id=`
 

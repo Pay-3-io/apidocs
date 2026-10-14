@@ -1,6 +1,6 @@
 # Referral Codes
 
-Register the referral codes your client uses, attribute the users who sign up through them, and set a card issuance price and a deposit fee rate per code.
+Register the referral codes your client uses, and attribute the users who sign up through them.
 
 All requests require `Authorization: Bearer <accessToken>`.
 
@@ -15,7 +15,7 @@ The base URL includes the trailing `/external-service`; the paths below sit dire
 
 | Scope | Covers |
 |---|---|
-| `referrals:read` | Listing codes |
+| `referrals:read` | Listing codes and reading their stats |
 | `referrals:write` | Creating, enabling, disabling and deleting codes, and setting their card prices and deposit fee rates (includes `referrals:read`) |
 
 ## Code rules
@@ -43,80 +43,71 @@ Lists all of your codes, newest first.
   }
   ```
 - `link` is the sign-up link carrying the code. Use the value as returned; the host differs between sandbox and production.
-- `cardPrices` is the set of card issuance prices on the code, sorted by `bin` then `type`; `[]` when none is set. `price` is USD as a fixed 2-decimal string. See [Card prices per code](#card-prices-per-code).
-- `depositFeeRate` is the deposit fee rate that currently applies to the code's users, as a decimal string (`"0.015"` is 1.5%, `"0"` is no fee). `depositFeeRateSource` says where it comes from: `code` (set on this code) or `client` (no rate on the code, so your client's default applies).
-- `defaultDepositFeeRate` (top level, list only) is your client's default rate — the rate for codes with no rate of their own. See [Deposit fee rate per code](#deposit-fee-rate-per-code).
-- `updatedAt` changes when `enabled` changes. Setting prices or the rate does not change it.
+- `cardPrices` is the card issuance price set on the code (see [Card prices per code](#card-prices-per-code)); `[]` when none is set.
+- `depositFeeRate` is the fee rate that applies to the code's users when they deposit stablecoins from their own wallet, and `depositFeeRateSource` says where it comes from: `code` (set on this code) or `client` (your client's default). `defaultDepositFeeRate` is your client's default rate. See [Deposit fee rate per code](#deposit-fee-rate-per-code).
 - **No query parameters are accepted.** Any parameter returns `400` with a body such as `Unknown query parameter "enabled". Accepted: (none)`, so a filter that looks applied but is not can never be mistaken for a complete list. There is no paging and no filtering.
 
-There is no endpoint for reading a single code; use this list, or the response of `POST` / `PATCH`.
+## GET /referral-codes/stats
+
+Returns sign-ups, KYC approvals and card issuances per code, for reporting by code (for example, by agency).
+
+```bash
+curl -s "$BASE_URL/referral-codes/stats?from=2026-09-01&to=2026-09-30" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+- 200:
+  ```json
+  {
+    "data": [
+      { "code": "PARTNER-A", "registered": 12, "kycApproved": 9,
+        "cardsIssued": { "virtual": 7, "physical": 1 }, "issuanceAmount": "91.00" }
+    ],
+    "from": "2026-09-01",
+    "to": "2026-09-30"
+  }
+  ```
+- One row per code: every current code, including codes with no activity (all zeros), and **deleted codes that still have attributed users**, so past figures do not change when a code is deleted.
+- Sorted by `registered` (highest first), then by code.
+- `from` and `to` in the response echo the query as sent, or `null` when omitted.
+
+| Field | Meaning |
+|---|---|
+| `registered` | Users who signed up with the code during the period (by sign-up time) |
+| `kycApproved` | Of those users, how many currently have `kycStatus` `approved` — the same value `GET /users/{userId}` returns |
+| `cardsIssued.virtual` / `cardsIssued.physical` | Issued cards, including cards later deleted, issued during the period to users of the code, by card type. Users count regardless of when they signed up |
+| `issuanceAmount` | Total card issuance price charged for those cards (including cards later deleted), in USD, as a string with 2 decimal places (the same format as `POST /card/quote`). Physical card shipping is not included |
+
+Card counts cover issued cards, including cards later deleted, because their issuance price was charged.
+
+### Query parameters
+
+| Parameter | Format | Meaning |
+|---|---|---|
+| `from` | ISO 8601 date or datetime | Start of the period, inclusive. Omit for no lower bound |
+| `to` | ISO 8601 date or datetime | End of the period, inclusive. Omit for no upper bound |
+
+- `from` and `to` mean the same as on `GET /pool/ledger` and `GET /pool/transfers` (see [Date boundaries](pool.md#date-boundaries)). A date-only value is interpreted in UTC, and **a date-only `to` includes that whole day**: September is `?from=2026-09-01&to=2026-09-30`, and a single day is `?from=2026-09-15&to=2026-09-15`. A datetime is the given instant, inclusive at both ends.
+- `400` when a date is invalid (the same messages as the pool endpoints), when `from` is later than `to` (`from must not be later than to`), or when any other parameter is sent (`Unknown query parameter ... Accepted: from, to`).
+
+`stats` is also a valid code name: `PATCH /referral-codes/stats` and `DELETE /referral-codes/stats` act on a code named `stats`. Only `GET` returns the stats.
 
 ## POST /referral-codes
 
-```bash
-curl -X POST "$BASE_URL/referral-codes" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{
-        "code": "PARTNER-A",
-        "label": "Agency A",
-        "cardPrices": [
-          { "bin": "45492418", "type": "virtual", "price": "12.00" }
-        ],
-        "depositFeeRate": "0.015"
-      }'
-```
-
-| Field | Required | Notes |
-|---|---|---|
-| `code` | yes | See [Code rules](#code-rules) |
-| `label` | no | Free-form note for your own use. Not shown to end users |
-| `enabled` | no | Defaults to `true` |
-| `cardPrices` | no | Card issuance prices for the code's users. Omitted (or `[]`): no code prices, so your client's default price applies. See [Card prices per code](#card-prices-per-code) |
-| `depositFeeRate` | no | Deposit fee rate for the code's users. Omitted (or `null`): no code rate, so your client's default rate applies. See [Deposit fee rate per code](#deposit-fee-rate-per-code) |
-
-- 201: the single code, in the shape above (without `defaultDepositFeeRate`):
-  ```json
-  { "code": "PARTNER-A", "enabled": true, "label": "Agency A",
-    "link": "https://app.pay-3.io/?ref=PARTNER-A",
-    "cardPrices": [ { "bin": "45492418", "type": "virtual", "price": "12.00" } ],
-    "depositFeeRate": "0.015", "depositFeeRateSource": "code",
-    "createdAt": "2026-01-15T09:30:00.000Z", "updatedAt": "2026-01-15T09:30:00.000Z" }
-  ```
-- 400: invalid code format, an invalid `cardPrices` entry, or an invalid `depositFeeRate` (see [Errors](#errors)). **Nothing is created.**
-- 409: the code is already taken, by you or by another partner.
-- 500 `Failed to create code`: the code could not be saved together with its prices and rate. **The code is not created** — it is never left in place with the default price or rate. Retry the same request.
+- body: `{ "code": "PARTNER-A", "label": "Agency A", "enabled": true, "cardPrices": [ { "bin": "45492418", "type": "virtual", "price": "12.00" } ], "depositFeeRate": "0.015" }`
+  - `label`, `enabled`, `cardPrices` and `depositFeeRate` are optional; `enabled` defaults to `true`. `label` is a free-form note for your own use and is not shown to end users.
+- 201: the single code, in the shape above (without `defaultDepositFeeRate`).
+- 400: invalid code format, an invalid `cardPrices` entry, or an invalid `depositFeeRate` (nothing is created).
+- 409: the code is already taken, by you or by another partner, or it matches (case-insensitively) a user's invite code. Users' invite codes and referral codes share one namespace at sign-up, so a code that collides with one is rejected.
 
 ## PATCH /referral-codes/{code}
 
-Enables or disables a code, and sets or clears its card prices and deposit fee rate. `enabled`, `cardPrices` and `depositFeeRate` are the only mutable fields. Send **at least one** of them; fields you omit are left unchanged.
+Enables or disables a code, and sets its card prices and deposit fee rate. `enabled`, `cardPrices` and `depositFeeRate` are the only mutable fields; send any combination of them.
 
-```bash
-# Change the card price and the deposit fee rate
-curl -X PATCH "$BASE_URL/referral-codes/PARTNER-A" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{
-        "cardPrices": [
-          { "bin": "45492418", "type": "virtual", "price": "15.00" }
-        ],
-        "depositFeeRate": "0.02"
-      }'
-```
-
-| Body | Effect |
-|---|---|
-| `{ "enabled": false }` | Disables the code. Prices and rate are unchanged |
-| `{ "cardPrices": [ ... ] }` | **Replaces the whole set** of card prices. Entries you leave out are removed |
-| `{ "cardPrices": [] }` | Removes every card price from the code; your client's default price applies again |
-| `{ "depositFeeRate": "0.02" }` | Sets the code's deposit fee rate |
-| `{ "depositFeeRate": null }` | Removes the code's rate; your client's default rate applies again |
-
-- `cardPrices` cannot be `null`; send `[]` to remove the prices.
-- 200: the updated code, in the same shape as the `POST` response.
-- 400: an empty body, a field other than `enabled`, `cardPrices` or `depositFeeRate` (renaming means delete, then create), an invalid `cardPrices` entry, or an invalid `depositFeeRate` (see [Errors](#errors)). **Nothing is changed.**
+- body: `{ "enabled": false }`, `{ "cardPrices": [ { "bin": "45492418", "type": "virtual", "price": "15.00" } ] }` or `{ "depositFeeRate": "0.015" }`
+- 200: the updated code.
+- 400: an attempt to change anything other than `enabled`, `cardPrices` or `depositFeeRate` (renaming means delete, then create), an invalid `cardPrices` entry, or an invalid `depositFeeRate`. Nothing is changed.
 - 404: no such code for your client.
-- 500 `Failed to update card prices` / `Failed to update deposit fee rate`: the change was not fully saved. Re-send the same request; applying the same values again is safe.
-
-The `POST` and `PATCH` responses read the saved state back. In the rare case that read fails after a successful save, `cardPrices` comes back as `[]` and `depositFeeRate` / `depositFeeRateSource` are omitted; `GET /referral-codes` returns the authoritative state.
 
 A disabled code stops attributing new sign-ups — `POST /users/register` returns `400` for it. **Users already attributed keep their attribution.**
 
@@ -133,7 +124,7 @@ Codes are matched exactly, case-insensitively. Wildcard characters carry no mean
 
 ## Card prices per code
 
-Set a card issuance price on a code to charge the users who signed up with it a different price — for example, one code per agency, each with its own price.
+Set a card issuance price on a code to charge the users who signed up with it a different price, for example one code per agency in each country.
 
 ```json
 "cardPrices": [
@@ -143,21 +134,20 @@ Set a card issuance price on a code to charge the users who signed up with it a 
 
 | Field | Rule |
 |---|---|
-| `bin` | The card BIN, as a string of 6–8 digits |
-| `type` | `"virtual"` or `"physical"` |
-| `price` | USD, as a number or a string with up to 2 decimal places (`12`, `"12.5"`, `"12.00"`). Greater than `0`, at most `10000` |
+| `bin` | The card BIN, as a 6–8 digit string |
+| `type` | `virtual` or `physical` |
+| `price` | USD, as a number or string with up to 2 decimal places (`12`, `"12.5"`, `"12.00"`) |
 
-- Use the `bin` / `type` pairs listed by [`GET /card/catalog`](endpoints.md#get-cardcatalog). Its `defaultPrice` is the price that applies when a code has no price for that card.
-- **The price a user pays is decided in this order:** a price Pay3 has set for that individual user (if any), then the price of the code the user signed up with, then your client's default price, then the standard Pay3 price. `POST /card/quote` returns the price that applies to a given user.
-- **A code's price applies to every user who signed up with that code**, from their next card issuance. Cards already issued are not affected.
-- **`cardPrices` replaces the whole set** on every `POST` and `PATCH`. Entries you leave out are removed; `[]` removes all of them.
-- **A price must be above the issuance cost of that card** (for physical cards, the cost including production). A price at or below it returns `400` (`amount for bin <bin> is below the minimum chargeable price`) and nothing is saved. The cost itself is not disclosed.
-- Shipping for physical cards is charged separately and is not part of `price`.
-- Up to 20 entries per code, with at most one entry per `bin` and `type`.
+- **The price a user pays is decided in this order:** the price of the code the user signed up with, then your client's default price, then the standard Pay3 price. `POST /card/quote` returns the price that applies to the user.
+- **Changing a code's price applies to all of its users at once**, from their next card issuance. Cards already issued are not affected.
+- **`cardPrices` replaces the whole set.** Entries you leave out are removed; `[]` removes every price from the code.
+- A price must be above the issuance cost of that card (for physical cards, including production). A price at or below it returns `400` and nothing is saved. Shipping for physical cards is charged separately and is not part of `price`.
+- Up to 20 entries per code, one per `bin` and `type`.
+- `GET /card/catalog` lists the cards you can set a price for and the price that applies when a code has none ([Endpoints](endpoints.md#get-cardcatalog)).
 
 ## Deposit fee rate per code
 
-Set a deposit fee rate on a code to charge the users who signed up with it a different fee when they deposit stablecoins from their own external wallet to their card.
+Set a deposit fee rate on a code to charge the users who signed up with it a different fee when they deposit stablecoins from their own wallet. The fee is your revenue in full.
 
 ```json
 "depositFeeRate": "0.015"
@@ -165,38 +155,13 @@ Set a deposit fee rate on a code to charge the users who signed up with it a dif
 
 | Value | Meaning |
 |---|---|
-| `"0"` to `"0.05"` | The rate as a decimal fraction (`"0.015"` is 1.5%), as a string or a number, with up to 5 decimal places. The string form is recommended |
-| `null` | No rate on the code; your client's default rate applies |
+| `"0"` to `"0.05"` | The rate as a decimal fraction (`"0.015"` is 1.5%), as a number or string with up to 5 decimal places |
+| `null` | Removes the rate from the code; your client's default rate applies again |
 
-- **The rate a user pays is decided in this order:** a rate Pay3 has set for that individual user (if any), then the rate of the code the user signed up with, then your client's default rate. If none of these is set, no fee is charged. The standard Pay3 rate for its own app users is never applied to your users.
-- `"0"` on a code means no fee for its users, even when your client's default rate is higher.
-- **A code's rate applies to every user who signed up with that code**, from their next deposit. Deposits already credited are not affected.
-- **It applies only to stablecoins a user deposits from their own external wallet.** It does not apply to deposits into your pool, nor to charges from your pool to a user (`POST /pool/transfer`). The deduction on pool deposits is a separate rate (`feeRate` in `GET /pool/deposit_address`, see [Partner Pool](pool.md)).
-- The fee is the deposited amount multiplied by the rate, rounded down to the cent.
-- A rate below `0`, above `0.05`, or with more than 5 decimal places returns `400` and nothing is saved. A string must be a plain decimal starting with `0` (`"0.015"`; not `".015"` or `"1.5e-2"`).
-
-## Errors
-
-`400` bodies have the shape `{ "message": "...", "code": 400 }`. `<i>` is the zero-based index in `cardPrices`.
-
-| `message` | Cause |
-|---|---|
-| `Invalid JSON body` | The body is not parseable JSON |
-| `code must be 3-64 characters of letters, digits, hyphen or underscore` | `POST`: invalid `code` |
-| ``only `enabled`, `cardPrices` and `depositFeeRate` can be updated; rename by deleting and creating a new code`` | `PATCH`: none of the three fields, or any other field, was sent |
-| `cardPrices must be an array` | `cardPrices` is not an array (including `null` on `PATCH`) |
-| `cardPrices accepts at most 20 entries` | More than 20 entries |
-| `cardPrices[<i>] must be an object` | An entry is not an object |
-| `cardPrices[<i>] has an unknown field: <field>` | An entry has a field other than `bin`, `type`, `price` |
-| `cardPrices[<i>].bin must be a 6-8 digit string` | `bin` is not a string of 6–8 digits |
-| `cardPrices[<i>].type must be "virtual" or "physical"` | Invalid `type` |
-| `cardPrices[<i>].price must be a number with up to 2 decimal places` | `price` is not a non-negative number with up to 2 decimal places |
-| `cardPrices has a duplicate entry for <bin> <type>` | Two entries for the same `bin` and `type` |
-| `invalid amount for bin <bin>` | `price` is `0` or greater than `10000` |
-| `bin <bin> has no default pricing for <type>` | That BIN is not offered with that `type` |
-| `amount for bin <bin> is below the minimum chargeable price` | `price` is at or below the issuance cost of the card |
-| `pricing rows unavailable for bin <bin>` | The price could not be checked at this moment. Retry |
-| `depositFeeRate must be a decimal between 0 and 0.05 with up to 5 decimal places (e.g. "0.019"), or null` | Invalid `depositFeeRate` |
+- **The rate a user pays is decided in this order:** the rate of the code the user signed up with, then your client's default rate. The standard Pay3 rate is never used for your users. `"0"` on a code means no fee for its users, even when your default is higher.
+- **Changing a code's rate applies to all of its users at once**, from their next deposit. Deposits already received are not affected.
+- It applies only to deposits users make from their own wallet. Charges from your pool to a user (`POST /pool/transfer`) are free, and the fee on deposits to your pool is separate (see [Pool](pool.md)).
+- A rate above `0.05` or with more than 5 decimal places returns `400` and nothing is saved.
 
 ## Attributing users
 
@@ -221,6 +186,8 @@ curl -X POST "$BASE_URL/users/register" \
 ### Sign-up links (`?ref=`)
 
 Users who sign up through the `link` returned by `GET /referral-codes` are attributed to that code at sign-up and reported by the `user.registered` webhook ([Webhooks](webhooks.md)). They appear in `GET /users/list` with the same `referralCode` value.
+
+Each of those users also has their own invite code, issued by Pay3 (`inviteCode` in `user.registered` and the user endpoints). People who sign up through that user's invite link become your users too and **inherit the inviter's referral code** — the same price and deposit fee settings apply, and they count toward that code in `GET /referral-codes/stats`. The direct inviter is reported as `invitedByUserId`. A user's invite link is disabled by default; enable it with `PUT /users/{userId}/invite` ([Users](users.md#put-usersuseridinvite)). Sign-ups with the invite code of a user whose link is disabled are registered without a referral and do not become your users. Disabling a referral code does not disable the invite links of users who signed up with it — control those per user.
 
 ---
 The machine-readable specification is [openapi.yaml](openapi.yaml). See also [Users](users.md) for reading the attributed users and their status.

@@ -101,15 +101,23 @@ curl -X POST "$BASE_URL/card/quote" \
 # => {
 #      "message": "Quote generated",
 #      "data": { "bin": "45492418", "form_factor": "virtual", "country": null, "currency": "USD",
-#                "price": "5.00", "estimated_shipping": null, "total": "5.00" },
+#                "price": "5.00", "shipping": null, "total": "5.00" },
 #      "code": 0
 #    }
+
+# Physical: pass the destination country to get the delivery fee.
+curl -X POST "$BASE_URL/card/quote" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{ "userId": "<uuid>", "type": "physical", "bin": "45492418", "country": "JP" }'
+# => { "data": { …, "price": "100.00", "shipping": "12.00", "total": "112.00" }, "code": 0 }
 ```
 
 - `type` resolves to `physical` when omitted, so always pass `type` to quote a virtual card.
 - A `bin` that is not in the catalog, or a `type` that BIN cannot produce, returns `400` (`Unsupported card bin/form factor`).
-- `price`, `total`, and `estimated_shipping` are **strings** with two fixed decimals (`"5.00"`), not JSON numbers.
-- `estimated_shipping` is `null` when it does not apply (virtual cards, or `country` omitted). `null` means "not applicable", not "free".
+- `price`, `shipping`, and `total` are **strings** with two fixed decimals (`"5.00"`), not JSON numbers.
+- For physical cards the delivery fee is billed **on top of** the issuance fee and paid in full by the cardholder. Charge/fund `total`, not `price`.
+- `shipping` is `null` for virtual cards, when `country` is omitted, and when the carrier fee cannot be retrieved. `null` means "not available", not "free" — `total` is then `null` and `issue_card` returns `400`.
+- A quote is held for **48 hours**; issuing inside that window charges exactly the quoted `total`.
 
 ## 6. Check progress and card details
 

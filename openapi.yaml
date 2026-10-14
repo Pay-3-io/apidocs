@@ -110,15 +110,23 @@ info:
     # => {
     #      "message": "Quote generated",
     #      "data": { "bin": "45492418", "form_factor": "virtual", "country": null, "currency": "USD",
-    #                "price": "5.00", "estimated_shipping": null, "total": "5.00" },
+    #                "price": "5.00", "shipping": null, "total": "5.00" },
     #      "code": 0
     #    }
+
+    # Physical: pass the destination country to get the delivery fee.
+    curl -X POST "$BASE_URL/card/quote" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -d '{ "userId": "<uuid>", "type": "physical", "bin": "45492418", "country": "JP" }'
+    # => { "data": { …, "price": "100.00", "shipping": "12.00", "total": "112.00" }, "code": 0 }
     ```
 
     - `type` resolves to `physical` when omitted, so always pass `type` to quote a virtual card.
     - A `bin` that is not in the catalog, or a `type` that BIN cannot produce, returns `400` (`Unsupported card bin/form factor`).
-    - `price`, `total`, and `estimated_shipping` are **strings** with two fixed decimals (`"5.00"`), not JSON numbers.
-    - `estimated_shipping` is `null` when it does not apply (virtual cards, or `country` omitted). `null` means "not applicable", not "free".
+    - `price`, `shipping`, and `total` are **strings** with two fixed decimals (`"5.00"`), not JSON numbers.
+    - For physical cards the delivery fee is billed **on top of** the issuance fee and paid in full by the cardholder. Charge/fund `total`, not `price`.
+    - `shipping` is `null` for virtual cards, when `country` is omitted, and when the carrier fee cannot be retrieved. `null` means "not available", not "free" — `total` is then `null` and `issue_card` returns `400`.
+    - A quote is held for **48 hours**; issuing inside that window charges exactly the quoted `total`.
 
     ## 6. Check progress and card details
 
@@ -342,32 +350,35 @@ info:
     - body: `{ userId, type?, bin?, country? }`
       - `type` (default `"physical"`): `"virtual"` \| `"physical"`. Always pass it explicitly to quote a virtual card.
       - `bin` (optional): see **Card BINs**. Omitted, the first BIN that supports the requested form factor is used.
-      - `country` (optional): destination. For `physical`, returns the shipping estimate above the baseline.
-    - 200: `{ data: { bin, form_factor, country, currency, price, estimated_shipping, total }, code: 0 }`
-      - `total` is the price actually charged at issuance.
-      - `price`, `total` and `estimated_shipping` are **fixed 2-decimal strings** (`"5.00"`), like every other money field.
-      - `estimated_shipping` is `null` when it does not apply (virtual cards, or `country` omitted). **`null` means "not applicable", not "free".**
+      - `country` (optional): destination. **Required for `physical`** to get a shipping fee — without it `shipping` and `total` come back `null` and issuance is refused.
+    - 200: `{ data: { bin, form_factor, country, currency, price, shipping, total }, code: 0 }`
+      - `price` is the issuance fee. `shipping` is the delivery fee, charged **on top of** `price` and paid in full by the cardholder.
+      - `total` (= `price` + `shipping`) is the amount actually charged at issuance. **Fund the user's balance for `total`, not `price`.**
+      - `price`, `shipping` and `total` are **fixed 2-decimal strings** (`"5.00"`), like every other money field.
+      - `shipping` is `null` for virtual cards, when `country` is omitted, and when the carrier fee cannot be retrieved. **`null` means "not available", not "free"** — `total` is then `null` too, and `issue_card` returns 400 (`Shipping quote unavailable, please retry`).
+      - The quote is held for **48 hours**; issuing within that window charges exactly the quoted `total`. After that the fee is re-quoted at issuance.
 
     ```json
-    { "bin": "45492418", "form_factor": "virtual", "country": null, "currency": "USD", "price": "5.00", "estimated_shipping": null, "total": "5.00" }
+    { "bin": "45492418", "form_factor": "virtual", "country": null, "currency": "USD", "price": "5.00", "shipping": null, "total": "5.00" }
     ```
+
+    ```json
+    { "bin": "45492418", "form_factor": "physical", "country": "JP", "currency": "USD", "price": "100.00", "shipping": "12.00", "total": "112.00" }
+    ```
+
+    > Changed 2026-09-22: `estimated_shipping` (a non-charged indication) was replaced by `shipping` (the fee actually charged). Physical shipping is now billed separately from the issuance fee.
 
     - 400: unsupported `bin` / `type` combination (`{ "message": "Unsupported card bin/form factor: <bin>/<form factor>", "code": 400 }`).
 
     ### GET /card/catalog
 
-    Lists the cards your users can be issued, with the price that applies when no other price is set. Use it to find the `bin` / `type` pairs for **card prices per code**. Scope: `card:read`.
+    Lists the cards your users can be issued, with the price that applies when no other price is set. Scope: `card:read`.
 
-    ```bash
-    curl -s "$BASE_URL/card/catalog" -H "Authorization: Bearer $TOKEN"
-    ```
-
-    - No body and no `userId`. **No query parameters are accepted**; any parameter returns `400` (`Unknown query parameter "<name>". Accepted: (none)`).
+    - query: none (any parameter returns 400)
     - 200: `{ data: [{ bin, type, name, defaultPrice }] }`
       - One entry per BIN and `type` (`"virtual"` \| `"physical"`) that is enabled in the **card BIN catalog** and available to your client.
-      - `name` is the card's display name.
-      - `defaultPrice` is the issuance price for a user who has no price of their own — for example a user whose referral code has no `cardPrices` entry for that card. It is your client's default price, or the standard Pay3 price when your client has none. It is a **fixed 2-decimal string**, like `price` in `/card/quote`.
-      - Issuance costs are never returned.
+      - `defaultPrice` is the issuance price for a user without a price of their own — for example a user whose **referral code** has no `cardPrices` for that card. It is a **fixed 2-decimal string**, like `price` in `/card/quote`.
+      - Costs are never returned.
 
     ```json
     { "data": [
@@ -375,9 +386,7 @@ info:
     ] }
     ```
 
-    - 500 `Failed to fetch card catalog`: the catalog or its prices could not be read. Nothing partial or estimated is returned; retry.
-
-    Restrictions Pay3 sets for an individual user can still narrow what that user can be issued; `POST /card/quote` returns the exact price for a given user.
+    Per-user restrictions set by Pay3 can still narrow what an individual user can be issued; `/card/quote` returns the exact amount for a given user.
 
     ### POST /card/issue_card
 
@@ -427,7 +436,7 @@ info:
     | `45492418` | Visa / Pay3 Card | virtual |
     | `49387519` | Visa / White Card | physical |
 
-    Each BIN supports specific form factors, so a `bin` / `type` combination the catalog does not allow returns 400 (never 500). Production values are provided separately. `GET /card/catalog` returns the `bin` / `type` pairs available to your client in the environment you call.
+    Each BIN supports specific form factors, so a `bin` / `type` combination the catalog does not allow returns 400 (never 500). Production values are provided separately.
 
     ### POST /card/issuance_events
 
@@ -488,18 +497,17 @@ info:
     - `GET /pool/transfer/{transferId}` / `GET /pool/transfers` (`status` / `userId` / `from` / `to` / `limit` / `offset`)
     - `GET /pool/ledger` (`type` / `from` / `to` / `limit` / `offset`)
 
-    The list endpoints (`/pool/transfers`, `/pool/ledger`, `/users/list`, `GET /referral-codes`, `GET /card/catalog`) accept **a fixed set of parameter names and reject anything else with 400**, so a misspelling never comes back as an unfiltered `200` (see **Query parameter validation**).
+    The list endpoints (`/pool/transfers`, `/pool/ledger`, `/users/list`, `GET /referral-codes`, `GET /referral-codes/stats`) accept **a fixed set of parameter names and reject anything else with 400**, so a misspelling never comes back as an unfiltered `200` (see **Query parameter validation**).
 
     `from` and `to` filter on `createdAt`. **A date-only value is interpreted in UTC and `to` covers the whole day**, so a single day is `?from=2026-09-15&to=2026-09-15` (see **Date boundaries**).
 
     ## Referral Codes
 
-    Register, enable, disable and delete referral codes, attribute users to them, and set a card issuance price and a deposit fee rate per code. → ****Referral Codes****
+    Register, enable, disable and delete referral codes, set their card prices and deposit fee rates, and attribute users to them. → ****Referral Codes****
 
-    - `GET /referral-codes` / `POST /referral-codes` (`cardPrices` / `depositFeeRate` optional)
-    - `PATCH /referral-codes/{code}` (`enabled` / `cardPrices` / `depositFeeRate`, at least one) / `DELETE /referral-codes/{code}`
-
-    The card price and deposit fee rate set on a code apply to every user who signed up with that code. The cards you can price, and the price that applies otherwise, come from `GET /card/catalog`.
+    - `GET /referral-codes` / `POST /referral-codes`
+    - `PATCH /referral-codes/{code}` / `DELETE /referral-codes/{code}`
+    - `GET /referral-codes/stats` (`from` / `to`, same date boundaries as the pool endpoints) — sign-ups, KYC approvals and card issuances per code
 
     `POST /users/register` accepts a `referral_code`.
 
@@ -507,8 +515,9 @@ info:
 
     List your users and read their KYC and card issuance status. → ****Users****
 
-    - `GET /users/list` (scope `users:status`; accepts only `limit` 1–200 and `offset`)
+    - `GET /users/list` (scope `users:status`; accepts only `limit` 1–200, `offset`, `referralCode` and `kycStatus`)
     - `GET /users/{userId}` (scope `users:status`; unattributed and non-existent ids both return 404)
+    - `PUT /users/{userId}/invite` (scope `users:invite`, satisfied by `users:write`; enables or disables the user's invite link)
 
     The set of users returned by the list, accepted by the lookup, and accepted by `POST /pool/transfer` is **identical**.
 
@@ -524,7 +533,7 @@ info:
 
     Unrecognised paths and unsupported HTTP methods return a **JSON 404**. This holds for `/pool/*`, `/referral-codes*`, `/users/*` and `/oauth/*`.
 
-    `/kyc/*` and `/card/*` (except `GET /card/catalog`, which takes no body) resolve the `userId` in the body before routing on the path, so what an unknown sub-path or unsupported method returns there depends on the body you sent:
+    `/kyc/*` and `/card/*` resolve the `userId` in the body before routing on the path, so what an unknown sub-path or unsupported method returns there depends on the body you sent:
 
     | Body sent | Response from `/card/<unknown>` or `/kyc/<unknown>` |
     |---|---|
@@ -562,13 +571,15 @@ info:
     | Scope | Covers |
     |---|---|
     | `users:status` | `GET /users/list` and `GET /users/{userId}` (`users:read` satisfies it automatically) |
+    | `users:invite` | `PUT /users/{userId}/invite` (`users:write` satisfies it automatically) |
 
     ## Visibility
 
     You see only the users attributed to your client. A user is attributed when either of the following holds:
 
     1. They signed up through a link carrying one of your referral codes (the same users the `user.registered` webhook reports). Attribution is fixed at sign-up and does not change if the code is later disabled or deleted.
-    2. You created them with `POST /users/register`.
+    2. They signed up through the invite link of a user in (1), at any depth. They inherit that user's referral code unchanged, and are part of the same set with no extra step.
+    3. You created them with `POST /users/register`.
 
     This set is **identical** across `GET /users/list`, `GET /users/{userId}` and `POST /pool/transfer` (**Partner Pool**): a user that appears in the list can always be looked up and can always be sent a top-up instruction (other conditions, such as KYC, still apply).
 
@@ -593,14 +604,17 @@ info:
             "referralCode": "PARTNER-A",
             "kycStatus": "approved",
             "kyc": { "identity": { "status": "approved" }, "cardIssuer": { "status": "approved" } },
-            "cardStatus": "issued"
+            "cardStatus": "issued",
+            "inviteCode": "K7M2Q9XA",
+            "invitedByUserId": null,
+            "inviteEnabled": false
           }
         ],
         "paging": { "limit": 50, "offset": 0, "total": 1 }
       }
       ```
     - With no matching users the response is `{"data": [], "paging": {"limit":50,"offset":0,"total":0}}`. An empty result is not a `404`.
-    - 400: invalid `limit` / `offset`, or an unaccepted parameter name.
+    - 400: invalid `limit` / `offset` / `referralCode` / `kycStatus`, or an unaccepted parameter name.
     - 403: missing scope.
 
     | Field | Meaning |
@@ -611,6 +625,9 @@ info:
     | `kycStatus` | Overall status. Same vocabulary and same evaluation as `GET /users/{userId}` (see **kycStatus and kyc**) |
     | `kyc` | Per-stage status `{ identity: { status }, cardIssuer: { status } }` (same as above) |
     | `cardStatus` | Summary of card issuance: `issued` or `not_issued` |
+    | `inviteCode` | The user's own invite code, issued by Pay3 at sign-up (the code their invite link carries) |
+    | `invitedByUserId` | The user who invited them. `null` for users who signed up with a referral code directly, or were created through `POST /users/register` |
+    | `inviteEnabled` | Whether you have enabled this user's invite link (see **PUT /users/{userId}/invite**). `false` for users created through `POST /users/register` |
 
     `cardStatus` is a summary flag taken from Pay3's own records. The list performs no per-user card lookup, so a slow or unavailable card platform never blocks it. Card count, form factor and states such as `frozen` come from `cards` in `GET /users/{userId}`.
 
@@ -622,9 +639,25 @@ info:
     | `offset` | `0` | decimal integer, 0 or greater | `400`. An `offset` past the total returns a `200` empty page (`"data": []`, `total` unchanged) |
 
     - Ordering is fixed: newest `registeredAt` first, ties broken by `userId`. Because the order is fixed, advancing `offset` neither skips nor repeats rows.
-    - `paging.total` is the number of users attributed to you, before `limit` is applied.
-    - `limit` and `offset` are **the only accepted parameters**, and names are case-sensitive. Any other name (including a misspelling such as `?userid=`) returns `400`, with the accepted names listed in the body; an unrecognised filter is never silently dropped and returned as an unfiltered `200` (see **Query parameter validation**).
-    - Filtering (by referral code, for example), sort options and CSV export are not currently offered.
+    - `paging.total` is the number of users attributed to you that match the filters below, before `limit` is applied.
+    - `limit`, `offset`, `referralCode` and `kycStatus` are **the only accepted parameters**, and names are case-sensitive. Any other name (including a misspelling such as `?userid=`) returns `400`, with the accepted names listed in the body; an unrecognised filter is never silently dropped and returned as an unfiltered `200` (see **Query parameter validation**).
+    - Sort options and CSV export are not currently offered.
+
+    ### Filters
+
+    Both filters are optional and can be combined (a user must match both). An empty value (`?kycStatus=`) means no filter.
+
+    | Parameter | Matches | On an invalid value |
+    |---|---|---|
+    | `referralCode` | Users who signed up with this code. Case-insensitive exact match; wildcards carry no meaning. A deleted code still matches the users attributed to it | `400` when the value is not 3–64 characters of `A-Z`, `a-z`, `0-9`, `-` and `_`. A well-formed code that is not one of yours returns a `200` empty page |
+    | `kycStatus` | Users whose `kycStatus` field has this value: `not_submitted`, `pending`, `approved` or `rejected` | `400`, with the accepted values listed in the body |
+
+    ```bash
+    curl -s "$BASE_URL/users/list?referralCode=PARTNER-A&kycStatus=approved" \
+      -H "Authorization: Bearer $ACCESS_TOKEN"
+    ```
+
+    Users created through `POST /users/register` without a referral code never match a `referralCode` filter. Per-code totals are available from **`GET /referral-codes/stats`**.
 
     ### Reading every page
 
@@ -664,11 +697,15 @@ info:
         "cards": [
           { "cardType": "virtual", "status": "active" },
           { "cardType": "physical", "status": "shipped" }
-        ]
+        ],
+        "inviteCode": "K7M2Q9XA",
+        "invitedByUserId": null,
+        "inviteEnabled": false
       }
       ```
       - A user with no cards returns `"cards": []`, never `null`.
       - Card number, CVV, BIN, billing address, name and email are not included.
+      - `inviteCode`, `invitedByUserId` and `inviteEnabled` mean the same as in **`GET /users/list`**.
     - 403: missing scope.
     - 404: the user id is not attributed to you, or does not exist.
     - 502: card issuance status could not be retrieved. This is distinct from "no cards" — retry rather than treating it as an empty list.
@@ -729,6 +766,32 @@ info:
 
     - `frozen` takes precedence over the form-factor state: an activated physical card that is locked also reports `frozen`.
     - Cancelled and deactivated cards are not listed.
+
+    ## PUT /users/{userId}/invite
+
+    Enables or disables a user's invite link. While disabled (the default for every user), the user's Friends screen shows only "The program hasn't started yet. Please ask the person who invited you for details." Once enabled, it shows their invite link and QR code. Pay3 applies no other condition (KYC or otherwise) — whether to enable is your decision.
+
+    People who sign up through that link become your users and inherit the inviter's referral code; the direct inviter is recorded as `invitedByUserId` (see **`user.registered`**). While a user's invite link is disabled, their invite code is treated as invalid: anyone who signs up with it is registered without a referral and does not become your user. Disabling does not change users who have already signed up; they keep their attribution.
+
+    ```bash
+    curl -s -X PUT "$BASE_URL/users/$USER_ID/invite" \
+      -H "Authorization: Bearer $ACCESS_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"enabled": true}'
+    ```
+
+    - Body: `{"enabled": true}` or `{"enabled": false}`. `enabled` is the only accepted key.
+    - 200:
+      ```json
+      { "userId": "5c3ff529-0000-4000-8000-000000000000", "inviteCode": "K7M2Q9XA", "invitedByUserId": null, "inviteEnabled": true }
+      ```
+      Repeating the same value also returns `200` (the request is idempotent, so no `Idempotency-Key` is needed).
+    - 400: `enabled must be a boolean` — `enabled` is missing or not a boolean, or the body has other keys.
+    - 403: `Insufficient scope: users:invite required`. Clients holding `users:write` satisfy it automatically; clients with no scopes configured do not.
+    - 404: the user id is not attributed to you, or does not exist.
+    - 409: `invite_not_available: this user was created without a referral code` — users created through `POST /users/register` without a referral code have no referral code to pass on, so their invite cannot be enabled.
+
+    The current state is also returned as `inviteEnabled` by `GET /users/list` and `GET /users/{userId}`. Changing it does not emit a webhook.
 
     ## The separate `GET /users?id=`
 
@@ -969,7 +1032,7 @@ info:
 
     ## Query parameters
 
-    On the list endpoints (`GET /pool/transfers`, `GET /pool/ledger`, `GET /users/list`, `GET /referral-codes`) and on `GET /pool/balance`, values and parameter names are validated strictly: out-of-range values, malformed values, and unknown names all return `400` with a body of the form `{ "message": ..., "code": 400 }`, rather than being clamped, ignored, or answered with an empty `200`. A typo is therefore never indistinguishable from "no rows".
+    On the list endpoints (`GET /pool/transfers`, `GET /pool/ledger`, `GET /users/list`, `GET /referral-codes`, `GET /referral-codes/stats`) and on `GET /pool/balance`, values and parameter names are validated strictly: out-of-range values, malformed values, and unknown names all return `400` with a body of the form `{ "message": ..., "code": 400 }`, rather than being clamped, ignored, or answered with an empty `200`. A typo is therefore never indistinguishable from "no rows".
 
     | Parameter | Accepted values | Default |
     |---|---|---|
@@ -979,6 +1042,8 @@ info:
     | `type` (`/pool/ledger`) | Exactly one of `deposit`, `fee`, `transfer`, `refund`, `withdrawal`, `adjustment` | no filter |
     | `status` (`/pool/transfers`) | Exactly one of `pending`, `settled`, `failed`, `rejected` | no filter |
     | `userId` (`/pool/transfers`) | A uuid | no filter |
+    | `referralCode` (`/users/list`) | 3–64 characters of `A-Z`, `a-z`, `0-9`, `-`, `_` (case-insensitive). A well-formed code that is not yours returns an empty `200` page | no filter |
+    | `kycStatus` (`/users/list`) | Exactly one of `not_submitted`, `pending`, `approved`, `rejected` | no filter |
 
     An empty value (`?from=`) means "no filter".
 
@@ -993,8 +1058,9 @@ info:
     |---|---|
     | `GET /pool/ledger` | `type`, `from`, `to`, `limit`, `offset` |
     | `GET /pool/transfers` | `status`, `userId`, `from`, `to`, `limit`, `offset` |
-    | `GET /users/list` | `limit`, `offset` |
+    | `GET /users/list` | `limit`, `offset`, `referralCode`, `kycStatus` |
     | `GET /referral-codes` | (none; always returns all codes) |
+    | `GET /referral-codes/stats` | `from`, `to` (same date boundaries as below) |
     | `GET /pool/balance` | (none; always returns the current balance) |
     | `GET /pool/deposit_address` | (none; always returns the registered address) |
 
@@ -1019,10 +1085,10 @@ info:
 
     The settlement mode is set per client by Pay3 and cannot be changed through the partner API. `simulate` is the sandbox mode; production values are provided during production onboarding.
 
-    - Under `simulate`, funds move from the pool balance to the user's card balance along the same path as in production, so a `settled` instruction really is reflected on the card balance. What the sandbox omits is only the detection of incoming deposits on the production rail; sandbox credits are detected on the sandbox rail and emit `pool.deposit.credited` (**Webhooks**).
+    - In every mode, including `simulate`, funds move from the pool balance to the user's card balance along the same path, so a `settled` instruction really is reflected on the card balance. The mode is a record of which environment the client belongs to; it does not change how an instruction is settled. What the sandbox omits is only the detection of incoming deposits on the production rail; sandbox credits are detected on the sandbox rail and emit `pool.deposit.credited` (**Webhooks**).
     - If funds cannot be moved — insufficient pool funds, or an error on the card platform — the instruction is recorded as `failed` with a reason and the amount is returned to the pool balance.
     - A client with no mode configured gets `503` from `POST /pool/transfer`. There is no default, so a missing setting can never produce a ledger row without a matching movement.
-    - Finalised rows carry `settlementMode`, and the mode is kept in the ledger `metadata`, so sandbox rows never look like production movements.
+    - Finalised rows carry `settlementMode`, and the mode is kept in the ledger `metadata`, so sandbox rows can always be told apart from production rows.
 
     ## Notes
 
@@ -1036,7 +1102,7 @@ info:
 
     # Referral Codes
 
-    Register the referral codes your client uses, attribute the users who sign up through them, and set a card issuance price and a deposit fee rate per code.
+    Register the referral codes your client uses, and attribute the users who sign up through them.
 
     All requests require `Authorization: Bearer <accessToken>`.
 
@@ -1051,7 +1117,7 @@ info:
 
     | Scope | Covers |
     |---|---|
-    | `referrals:read` | Listing codes |
+    | `referrals:read` | Listing codes and reading their stats |
     | `referrals:write` | Creating, enabling, disabling and deleting codes, and setting their card prices and deposit fee rates (includes `referrals:read`) |
 
     ## Code rules
@@ -1079,80 +1145,71 @@ info:
       }
       ```
     - `link` is the sign-up link carrying the code. Use the value as returned; the host differs between sandbox and production.
-    - `cardPrices` is the set of card issuance prices on the code, sorted by `bin` then `type`; `[]` when none is set. `price` is USD as a fixed 2-decimal string. See **Card prices per code**.
-    - `depositFeeRate` is the deposit fee rate that currently applies to the code's users, as a decimal string (`"0.015"` is 1.5%, `"0"` is no fee). `depositFeeRateSource` says where it comes from: `code` (set on this code) or `client` (no rate on the code, so your client's default applies).
-    - `defaultDepositFeeRate` (top level, list only) is your client's default rate — the rate for codes with no rate of their own. See **Deposit fee rate per code**.
-    - `updatedAt` changes when `enabled` changes. Setting prices or the rate does not change it.
+    - `cardPrices` is the card issuance price set on the code (see **Card prices per code**); `[]` when none is set.
+    - `depositFeeRate` is the fee rate that applies to the code's users when they deposit stablecoins from their own wallet, and `depositFeeRateSource` says where it comes from: `code` (set on this code) or `client` (your client's default). `defaultDepositFeeRate` is your client's default rate. See **Deposit fee rate per code**.
     - **No query parameters are accepted.** Any parameter returns `400` with a body such as `Unknown query parameter "enabled". Accepted: (none)`, so a filter that looks applied but is not can never be mistaken for a complete list. There is no paging and no filtering.
 
-    There is no endpoint for reading a single code; use this list, or the response of `POST` / `PATCH`.
+    ## GET /referral-codes/stats
+
+    Returns sign-ups, KYC approvals and card issuances per code, for reporting by code (for example, by agency).
+
+    ```bash
+    curl -s "$BASE_URL/referral-codes/stats?from=2026-09-01&to=2026-09-30" \
+      -H "Authorization: Bearer $TOKEN"
+    ```
+
+    - 200:
+      ```json
+      {
+        "data": [
+          { "code": "PARTNER-A", "registered": 12, "kycApproved": 9,
+            "cardsIssued": { "virtual": 7, "physical": 1 }, "issuanceAmount": "91.00" }
+        ],
+        "from": "2026-09-01",
+        "to": "2026-09-30"
+      }
+      ```
+    - One row per code: every current code, including codes with no activity (all zeros), and **deleted codes that still have attributed users**, so past figures do not change when a code is deleted.
+    - Sorted by `registered` (highest first), then by code.
+    - `from` and `to` in the response echo the query as sent, or `null` when omitted.
+
+    | Field | Meaning |
+    |---|---|
+    | `registered` | Users who signed up with the code during the period (by sign-up time) |
+    | `kycApproved` | Of those users, how many currently have `kycStatus` `approved` — the same value `GET /users/{userId}` returns |
+    | `cardsIssued.virtual` / `cardsIssued.physical` | Issued cards, including cards later deleted, issued during the period to users of the code, by card type. Users count regardless of when they signed up |
+    | `issuanceAmount` | Total card issuance price charged for those cards (including cards later deleted), in USD, as a string with 2 decimal places (the same format as `POST /card/quote`). Physical card shipping is not included |
+
+    Card counts cover issued cards, including cards later deleted, because their issuance price was charged.
+
+    ### Query parameters
+
+    | Parameter | Format | Meaning |
+    |---|---|---|
+    | `from` | ISO 8601 date or datetime | Start of the period, inclusive. Omit for no lower bound |
+    | `to` | ISO 8601 date or datetime | End of the period, inclusive. Omit for no upper bound |
+
+    - `from` and `to` mean the same as on `GET /pool/ledger` and `GET /pool/transfers` (see **Date boundaries**). A date-only value is interpreted in UTC, and **a date-only `to` includes that whole day**: September is `?from=2026-09-01&to=2026-09-30`, and a single day is `?from=2026-09-15&to=2026-09-15`. A datetime is the given instant, inclusive at both ends.
+    - `400` when a date is invalid (the same messages as the pool endpoints), when `from` is later than `to` (`from must not be later than to`), or when any other parameter is sent (`Unknown query parameter ... Accepted: from, to`).
+
+    `stats` is also a valid code name: `PATCH /referral-codes/stats` and `DELETE /referral-codes/stats` act on a code named `stats`. Only `GET` returns the stats.
 
     ## POST /referral-codes
 
-    ```bash
-    curl -X POST "$BASE_URL/referral-codes" \
-      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-      -d '{
-            "code": "PARTNER-A",
-            "label": "Agency A",
-            "cardPrices": [
-              { "bin": "45492418", "type": "virtual", "price": "12.00" }
-            ],
-            "depositFeeRate": "0.015"
-          }'
-    ```
-
-    | Field | Required | Notes |
-    |---|---|---|
-    | `code` | yes | See **Code rules** |
-    | `label` | no | Free-form note for your own use. Not shown to end users |
-    | `enabled` | no | Defaults to `true` |
-    | `cardPrices` | no | Card issuance prices for the code's users. Omitted (or `[]`): no code prices, so your client's default price applies. See **Card prices per code** |
-    | `depositFeeRate` | no | Deposit fee rate for the code's users. Omitted (or `null`): no code rate, so your client's default rate applies. See **Deposit fee rate per code** |
-
-    - 201: the single code, in the shape above (without `defaultDepositFeeRate`):
-      ```json
-      { "code": "PARTNER-A", "enabled": true, "label": "Agency A",
-        "link": "https://app.pay-3.io/?ref=PARTNER-A",
-        "cardPrices": [ { "bin": "45492418", "type": "virtual", "price": "12.00" } ],
-        "depositFeeRate": "0.015", "depositFeeRateSource": "code",
-        "createdAt": "2026-01-15T09:30:00.000Z", "updatedAt": "2026-01-15T09:30:00.000Z" }
-      ```
-    - 400: invalid code format, an invalid `cardPrices` entry, or an invalid `depositFeeRate` (see **Errors**). **Nothing is created.**
-    - 409: the code is already taken, by you or by another partner.
-    - 500 `Failed to create code`: the code could not be saved together with its prices and rate. **The code is not created** — it is never left in place with the default price or rate. Retry the same request.
+    - body: `{ "code": "PARTNER-A", "label": "Agency A", "enabled": true, "cardPrices": [ { "bin": "45492418", "type": "virtual", "price": "12.00" } ], "depositFeeRate": "0.015" }`
+      - `label`, `enabled`, `cardPrices` and `depositFeeRate` are optional; `enabled` defaults to `true`. `label` is a free-form note for your own use and is not shown to end users.
+    - 201: the single code, in the shape above (without `defaultDepositFeeRate`).
+    - 400: invalid code format, an invalid `cardPrices` entry, or an invalid `depositFeeRate` (nothing is created).
+    - 409: the code is already taken, by you or by another partner, or it matches (case-insensitively) a user's invite code. Users' invite codes and referral codes share one namespace at sign-up, so a code that collides with one is rejected.
 
     ## PATCH /referral-codes/{code}
 
-    Enables or disables a code, and sets or clears its card prices and deposit fee rate. `enabled`, `cardPrices` and `depositFeeRate` are the only mutable fields. Send **at least one** of them; fields you omit are left unchanged.
+    Enables or disables a code, and sets its card prices and deposit fee rate. `enabled`, `cardPrices` and `depositFeeRate` are the only mutable fields; send any combination of them.
 
-    ```bash
-    # Change the card price and the deposit fee rate
-    curl -X PATCH "$BASE_URL/referral-codes/PARTNER-A" \
-      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-      -d '{
-            "cardPrices": [
-              { "bin": "45492418", "type": "virtual", "price": "15.00" }
-            ],
-            "depositFeeRate": "0.02"
-          }'
-    ```
-
-    | Body | Effect |
-    |---|---|
-    | `{ "enabled": false }` | Disables the code. Prices and rate are unchanged |
-    | `{ "cardPrices": [ ... ] }` | **Replaces the whole set** of card prices. Entries you leave out are removed |
-    | `{ "cardPrices": [] }` | Removes every card price from the code; your client's default price applies again |
-    | `{ "depositFeeRate": "0.02" }` | Sets the code's deposit fee rate |
-    | `{ "depositFeeRate": null }` | Removes the code's rate; your client's default rate applies again |
-
-    - `cardPrices` cannot be `null`; send `[]` to remove the prices.
-    - 200: the updated code, in the same shape as the `POST` response.
-    - 400: an empty body, a field other than `enabled`, `cardPrices` or `depositFeeRate` (renaming means delete, then create), an invalid `cardPrices` entry, or an invalid `depositFeeRate` (see **Errors**). **Nothing is changed.**
+    - body: `{ "enabled": false }`, `{ "cardPrices": [ { "bin": "45492418", "type": "virtual", "price": "15.00" } ] }` or `{ "depositFeeRate": "0.015" }`
+    - 200: the updated code.
+    - 400: an attempt to change anything other than `enabled`, `cardPrices` or `depositFeeRate` (renaming means delete, then create), an invalid `cardPrices` entry, or an invalid `depositFeeRate`. Nothing is changed.
     - 404: no such code for your client.
-    - 500 `Failed to update card prices` / `Failed to update deposit fee rate`: the change was not fully saved. Re-send the same request; applying the same values again is safe.
-
-    The `POST` and `PATCH` responses read the saved state back. In the rare case that read fails after a successful save, `cardPrices` comes back as `[]` and `depositFeeRate` / `depositFeeRateSource` are omitted; `GET /referral-codes` returns the authoritative state.
 
     A disabled code stops attributing new sign-ups — `POST /users/register` returns `400` for it. **Users already attributed keep their attribution.**
 
@@ -1169,7 +1226,7 @@ info:
 
     ## Card prices per code
 
-    Set a card issuance price on a code to charge the users who signed up with it a different price — for example, one code per agency, each with its own price.
+    Set a card issuance price on a code to charge the users who signed up with it a different price, for example one code per agency in each country.
 
     ```json
     "cardPrices": [
@@ -1179,21 +1236,20 @@ info:
 
     | Field | Rule |
     |---|---|
-    | `bin` | The card BIN, as a string of 6–8 digits |
-    | `type` | `"virtual"` or `"physical"` |
-    | `price` | USD, as a number or a string with up to 2 decimal places (`12`, `"12.5"`, `"12.00"`). Greater than `0`, at most `10000` |
+    | `bin` | The card BIN, as a 6–8 digit string |
+    | `type` | `virtual` or `physical` |
+    | `price` | USD, as a number or string with up to 2 decimal places (`12`, `"12.5"`, `"12.00"`) |
 
-    - Use the `bin` / `type` pairs listed by **`GET /card/catalog`**. Its `defaultPrice` is the price that applies when a code has no price for that card.
-    - **The price a user pays is decided in this order:** a price Pay3 has set for that individual user (if any), then the price of the code the user signed up with, then your client's default price, then the standard Pay3 price. `POST /card/quote` returns the price that applies to a given user.
-    - **A code's price applies to every user who signed up with that code**, from their next card issuance. Cards already issued are not affected.
-    - **`cardPrices` replaces the whole set** on every `POST` and `PATCH`. Entries you leave out are removed; `[]` removes all of them.
-    - **A price must be above the issuance cost of that card** (for physical cards, the cost including production). A price at or below it returns `400` (`amount for bin <bin> is below the minimum chargeable price`) and nothing is saved. The cost itself is not disclosed.
-    - Shipping for physical cards is charged separately and is not part of `price`.
-    - Up to 20 entries per code, with at most one entry per `bin` and `type`.
+    - **The price a user pays is decided in this order:** the price of the code the user signed up with, then your client's default price, then the standard Pay3 price. `POST /card/quote` returns the price that applies to the user.
+    - **Changing a code's price applies to all of its users at once**, from their next card issuance. Cards already issued are not affected.
+    - **`cardPrices` replaces the whole set.** Entries you leave out are removed; `[]` removes every price from the code.
+    - A price must be above the issuance cost of that card (for physical cards, including production). A price at or below it returns `400` and nothing is saved. Shipping for physical cards is charged separately and is not part of `price`.
+    - Up to 20 entries per code, one per `bin` and `type`.
+    - `GET /card/catalog` lists the cards you can set a price for and the price that applies when a code has none (**Endpoints**).
 
     ## Deposit fee rate per code
 
-    Set a deposit fee rate on a code to charge the users who signed up with it a different fee when they deposit stablecoins from their own external wallet to their card.
+    Set a deposit fee rate on a code to charge the users who signed up with it a different fee when they deposit stablecoins from their own wallet. The fee is your revenue in full.
 
     ```json
     "depositFeeRate": "0.015"
@@ -1201,38 +1257,13 @@ info:
 
     | Value | Meaning |
     |---|---|
-    | `"0"` to `"0.05"` | The rate as a decimal fraction (`"0.015"` is 1.5%), as a string or a number, with up to 5 decimal places. The string form is recommended |
-    | `null` | No rate on the code; your client's default rate applies |
+    | `"0"` to `"0.05"` | The rate as a decimal fraction (`"0.015"` is 1.5%), as a number or string with up to 5 decimal places |
+    | `null` | Removes the rate from the code; your client's default rate applies again |
 
-    - **The rate a user pays is decided in this order:** a rate Pay3 has set for that individual user (if any), then the rate of the code the user signed up with, then your client's default rate. If none of these is set, no fee is charged. The standard Pay3 rate for its own app users is never applied to your users.
-    - `"0"` on a code means no fee for its users, even when your client's default rate is higher.
-    - **A code's rate applies to every user who signed up with that code**, from their next deposit. Deposits already credited are not affected.
-    - **It applies only to stablecoins a user deposits from their own external wallet.** It does not apply to deposits into your pool, nor to charges from your pool to a user (`POST /pool/transfer`). The deduction on pool deposits is a separate rate (`feeRate` in `GET /pool/deposit_address`, see **Partner Pool**).
-    - The fee is the deposited amount multiplied by the rate, rounded down to the cent.
-    - A rate below `0`, above `0.05`, or with more than 5 decimal places returns `400` and nothing is saved. A string must be a plain decimal starting with `0` (`"0.015"`; not `".015"` or `"1.5e-2"`).
-
-    ## Errors
-
-    `400` bodies have the shape `{ "message": "...", "code": 400 }`. `<i>` is the zero-based index in `cardPrices`.
-
-    | `message` | Cause |
-    |---|---|
-    | `Invalid JSON body` | The body is not parseable JSON |
-    | `code must be 3-64 characters of letters, digits, hyphen or underscore` | `POST`: invalid `code` |
-    | ``only `enabled`, `cardPrices` and `depositFeeRate` can be updated; rename by deleting and creating a new code`` | `PATCH`: none of the three fields, or any other field, was sent |
-    | `cardPrices must be an array` | `cardPrices` is not an array (including `null` on `PATCH`) |
-    | `cardPrices accepts at most 20 entries` | More than 20 entries |
-    | `cardPrices[<i>] must be an object` | An entry is not an object |
-    | `cardPrices[<i>] has an unknown field: <field>` | An entry has a field other than `bin`, `type`, `price` |
-    | `cardPrices[<i>].bin must be a 6-8 digit string` | `bin` is not a string of 6–8 digits |
-    | `cardPrices[<i>].type must be "virtual" or "physical"` | Invalid `type` |
-    | `cardPrices[<i>].price must be a number with up to 2 decimal places` | `price` is not a non-negative number with up to 2 decimal places |
-    | `cardPrices has a duplicate entry for <bin> <type>` | Two entries for the same `bin` and `type` |
-    | `invalid amount for bin <bin>` | `price` is `0` or greater than `10000` |
-    | `bin <bin> has no default pricing for <type>` | That BIN is not offered with that `type` |
-    | `amount for bin <bin> is below the minimum chargeable price` | `price` is at or below the issuance cost of the card |
-    | `pricing rows unavailable for bin <bin>` | The price could not be checked at this moment. Retry |
-    | `depositFeeRate must be a decimal between 0 and 0.05 with up to 5 decimal places (e.g. "0.019"), or null` | Invalid `depositFeeRate` |
+    - **The rate a user pays is decided in this order:** the rate of the code the user signed up with, then your client's default rate. The standard Pay3 rate is never used for your users. `"0"` on a code means no fee for its users, even when your default is higher.
+    - **Changing a code's rate applies to all of its users at once**, from their next deposit. Deposits already received are not affected.
+    - It applies only to deposits users make from their own wallet. Charges from your pool to a user (`POST /pool/transfer`) are free, and the fee on deposits to your pool is separate (see **Pool**).
+    - A rate above `0.05` or with more than 5 decimal places returns `400` and nothing is saved.
 
     ## Attributing users
 
@@ -1257,6 +1288,8 @@ info:
     ### Sign-up links (`?ref=`)
 
     Users who sign up through the `link` returned by `GET /referral-codes` are attributed to that code at sign-up and reported by the `user.registered` webhook (**Webhooks**). They appear in `GET /users/list` with the same `referralCode` value.
+
+    Each of those users also has their own invite code, issued by Pay3 (`inviteCode` in `user.registered` and the user endpoints). People who sign up through that user's invite link become your users too and **inherit the inviter's referral code** — the same price and deposit fee settings apply, and they count toward that code in `GET /referral-codes/stats`. The direct inviter is reported as `invitedByUserId`. A user's invite link is disabled by default; enable it with `PUT /users/{userId}/invite` (**Users**). Sign-ups with the invite code of a user whose link is disabled are registered without a referral and do not become your users. Disabling a referral code does not disable the invite links of users who signed up with it — control those per user.
 
     ---
     The machine-readable specification is [openapi.yaml](openapi.yaml). See also **Users** for reading the attributed users and their status.
@@ -1376,8 +1409,8 @@ info:
 
     | Event | Emitted when | `data` fields |
     |---|---|---|
-    | `user.registered` | A new user signs up through your referral link | `userId, email, name, partnerRefCode, registeredAt` |
-    | `user.kyc.updated` | The result of either verification stage changes | `userId, kycStatus, stage, stageStatus, updatedAt` |
+    | `user.registered` | A new user signs up through your referral link, or through the invite code of one of your users | `userId, email, name, partnerRefCode, registeredAt, inviteCode, invitedByUserId, invitedByInviteCode, inviteEnabled` |
+    | `user.kyc.updated` | The result of either verification stage changes | `userId, kycStatus, stage, stageStatus, name, updatedAt` |
     | `card.issued` | A virtual card is issued | `userId, cardId, cardType, issuedAt` |
     | `card.activated` | A physical card is activated | `userId, cardId, cardType, activatedAt` |
     | `pool.deposit.credited` | A pool credit is applied | `referenceId, grossAmount, feeAmount, netAmount, available, currency, transactionHash, chain, sourceAddress, creditedAt` |
@@ -1386,11 +1419,22 @@ info:
 
     **`user.registered`** fires only for browser sign-ups carrying `?ref=`; `POST /users/register` does not emit it, because its response already returns `userId`. `partnerRefCode` is the same value that `GET /users/list` returns as `referralCode` for that user, so the two can be compared directly.
 
-    **`user.kyc.updated`** covers two stages — first-line identity verification (`identity`) and the card issuer's own review (`card_issuer`) — and is sent whenever either changes. `stage` is the stage that changed and `stageStatus` its new status (`approved`, `rejected`, `pending`). `kycStatus` is the overall status, where `approved` means charge instructions and card issuance will pass (same rules as **Users**). When only the first stage is approved, `kycStatus` is still `pending`, so wait for the event where `kycStatus` becomes `approved`.
+    A user who signs up with the invite code of one of your users (the code in that user's Friends screen) also becomes your user and fires `user.registered`, provided you have enabled that user's invite link. With the link disabled, the sign-up is registered without a referral and no `user.registered` is sent. In that case `partnerRefCode` is still the **top-level referral code** — the one the inviter signed up with, inherited unchanged however many levels deep the chain goes — and the direct inviter is reported separately:
+
+    - `inviteCode` — this user's own invite code, issued by Pay3 at sign-up. It is the code their invite link carries.
+    - `invitedByUserId` / `invitedByInviteCode` — the user who invited them, and that user's invite code. Both are `null` for users who signed up with a referral code directly.
+    - `inviteEnabled` — whether you have enabled this user's invite link (`PUT /users/{userId}/invite`, see **Users**). Always `false` at sign-up.
 
     ```json
-    { "userId": "<uuid>", "kycStatus": "pending",  "stage": "identity",    "stageStatus": "approved", "updatedAt": "..." }
-    { "userId": "<uuid>", "kycStatus": "approved", "stage": "card_issuer", "stageStatus": "approved", "updatedAt": "..." }
+    { "userId": "<B>", "email": "b@example.com", "name": null, "partnerRefCode": "J01", "registeredAt": "...",
+      "inviteCode": "K7M2Q9XA", "invitedByUserId": "<A>", "invitedByInviteCode": "P4HZ8N2C", "inviteEnabled": false }
+    ```
+
+    **`user.kyc.updated`** covers two stages — first-line identity verification (`identity`) and the card issuer's own review (`card_issuer`) — and is sent whenever either changes. `stage` is the stage that changed and `stageStatus` its new status (`approved`, `rejected`, `pending`). `kycStatus` is the overall status, where `approved` means charge instructions and card issuance will pass (same rules as **Users**). When only the first stage is approved, `kycStatus` is still `pending`, so wait for the event where `kycStatus` becomes `approved`. `name` is the verified legal name (first and last name) and is set only when `kycStatus` is `approved`; otherwise it is `null`. For users who sign up by email, `user.registered` carries `name: null` because the name is only known after identity verification.
+
+    ```json
+    { "userId": "<uuid>", "kycStatus": "pending",  "stage": "identity",    "stageStatus": "approved", "name": null,         "updatedAt": "..." }
+    { "userId": "<uuid>", "kycStatus": "approved", "stage": "card_issuer", "stageStatus": "approved", "name": "Taro Yamada", "updatedAt": "..." }
     ```
 
     **`card.activated`** applies to physical cards only, so `cardType` is always `physical`. It fires on successful activation and not on re-activation. Virtual cards are usable as soon as they are issued and emit `card.issued` only.
@@ -1425,7 +1469,7 @@ tags:
   - name: Pool
     description: "Partner pool: balance, deposit address, top-up instructions, ledger"
   - name: Referral codes
-    description: "Referral codes and sign-up links attributed to your client, with a card issuance price and a deposit fee rate per code"
+    description: "Referral codes and sign-up links attributed to your client"
 
 security:
   - bearerAuth: []
@@ -1586,7 +1630,7 @@ paths:
             client's tenant. The body carries `message` and `code` only — no
             `userId`, no name, no card status. Re-registering an existing user of
             your own tenant is **not** an error: it returns `200` with the same
-            `userId` (see docs/api/junoe-sandbox.md §4).
+            `userId` (see docs/api/endpoints.md, `POST /users/register`).
           content:
             application/json:
               schema:
@@ -1706,11 +1750,15 @@ paths:
         Ordering is fixed: newest `registeredAt` first, ties broken by `userId`,
         so paging with `offset` neither skips nor repeats rows.
 
-        **Unknown query parameters return `400`.** `limit` and `offset` are the
-        only accepted names and they are case-sensitive; a misspelling such as
-        `?userid=` is rejected rather than ignored, because a silently dropped
-        filter comes back as an unfiltered `200` that looks like a valid result.
-        The error body lists the accepted names.
+        **Unknown query parameters return `400`.** `limit`, `offset`,
+        `referralCode` and `kycStatus` are the only accepted names and they are
+        case-sensitive; a misspelling such as `?userid=` is rejected rather than
+        ignored, because a silently dropped filter comes back as an unfiltered
+        `200` that looks like a valid result. The error body lists the accepted names.
+
+        `referralCode` and `kycStatus` are optional filters and can be combined
+        (a user must match both). An empty value means no filter. `paging.total`
+        counts the users that match the filters.
       parameters:
         - name: limit
           in: query
@@ -1731,13 +1779,37 @@ paths:
             minimum: 0
             default: 0
           description: Decimal integer, 0 or greater. Negative or non-integer values return `400`.
+        - name: referralCode
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{3,64}$"
+            example: PARTNER-A
+          description: |
+            Users who signed up with this referral code. Case-insensitive exact
+            match; wildcards carry no meaning. A deleted code still matches the users
+            attributed to it. A value that is not 3–64 characters of
+            `A-Z a-z 0-9 - _` returns `400`; a well-formed code that is not one of
+            yours returns a `200` empty page. Users created via `POST /users/register`
+            without a referral code never match.
+        - name: kycStatus
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [not_submitted, pending, approved, rejected]
+          description: |
+            Users whose overall `kycStatus` has this value (the same value each row
+            carries). Other values return `400`
+            (`kycStatus must be one of: not_submitted, pending, approved, rejected`).
       security:
         - bearerAuth: []
       responses:
         "200":
           description: |
-            Successful operation. An empty `data` array means the partner has no
-            users yet — it is not an error.
+            Successful operation. An empty `data` array means no attributed user
+            matches — it is not an error.
           content:
             application/json:
               schema:
@@ -1749,7 +1821,7 @@ paths:
                     type: array
                     items:
                       type: object
-                      required: [userId, registeredAt, referralCode, kycStatus, kyc, cardStatus]
+                      required: [userId, registeredAt, referralCode, kycStatus, kyc, cardStatus, inviteCode, invitedByUserId, inviteEnabled]
                       additionalProperties: false
                       properties:
                         userId:
@@ -1764,7 +1836,7 @@ paths:
                           type: string
                           nullable: true
                           description: Null for users created via `POST /users/register`.
-                          example: JUNOE-A
+                          example: PARTNER-A
                         kycStatus:
                           type: string
                           enum: [not_submitted, pending, approved, rejected]
@@ -1776,6 +1848,24 @@ paths:
                           type: string
                           enum: [issued, not_issued]
                           example: issued
+                        inviteCode:
+                          type: string
+                          nullable: true
+                          description: The user's own invite code, issued by Pay3 at sign-up (the code their invite link carries).
+                          example: K7M2Q9XA
+                        invitedByUserId:
+                          type: string
+                          nullable: true
+                          description: |
+                            The user who invited them through their invite link. Null for users who
+                            signed up with a referral code directly or were created via `POST /users/register`.
+                          example: null
+                        inviteEnabled:
+                          type: boolean
+                          description: |
+                            Whether the partner has enabled this user's invite link
+                            (`PUT /users/{userId}/invite`). False for users created via `POST /users/register`.
+                          example: false
                   paging:
                     type: object
                     required: [limit, offset, total]
@@ -1789,10 +1879,10 @@ paths:
                         example: 0
                       total:
                         type: integer
-                        description: Total number of attributed users, before `limit` is applied.
+                        description: Total number of attributed users matching the filters, before `limit` is applied.
                         example: 1
         "400":
-          description: Invalid `limit` or `offset`
+          description: Invalid `limit`, `offset`, `referralCode` or `kycStatus`, or an unknown query parameter
           content:
             application/json:
               schema:
@@ -1844,7 +1934,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [userId, kycStatus, kyc, cards]
+                required: [userId, kycStatus, kyc, cards, inviteCode, invitedByUserId, inviteEnabled]
                 additionalProperties: false
                 properties:
                   userId:
@@ -1873,6 +1963,24 @@ paths:
                           type: string
                           enum: [active, issued, shipped, activated, frozen]
                           example: active
+                  inviteCode:
+                    type: string
+                    nullable: true
+                    description: The user's own invite code, issued by Pay3 at sign-up (the code their invite link carries).
+                    example: K7M2Q9XA
+                  invitedByUserId:
+                    type: string
+                    nullable: true
+                    description: |
+                      The user who invited them through their invite link. Null for users who
+                      signed up with a referral code directly or were created via `POST /users/register`.
+                    example: null
+                  inviteEnabled:
+                    type: boolean
+                    description: |
+                      Whether the partner has enabled this user's invite link
+                      (`PUT /users/{userId}/invite`). False for users created via `POST /users/register`.
+                    example: false
         "401":
           description: Unauthorized
           content:
@@ -1895,6 +2003,116 @@ paths:
           description: |
             Card issuance status could not be retrieved. Distinct from "no cards"
             — retry rather than treating it as an empty list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /users/{userId}/invite:
+    put:
+      tags:
+        - Users
+      operationId: setUserInvite
+      summary: Enable or disable a user's invite link
+      description: |
+        Enables or disables the invite link of a user attributed to the calling
+        partner. Disabled is the default for every user: their Friends screen then
+        says the program has not started. When enabled, it shows their invite link
+        and QR code. Pay3 applies no other condition.
+
+        People who sign up through the link become the partner's users, inherit the
+        inviter's referral code, and record the inviter as `invitedByUserId`.
+        While disabled, the user's invite code is treated as invalid: sign-ups with
+        it are registered without a referral and do not become the partner's users.
+        Users who already signed up keep their attribution. The request is idempotent (repeating the same value returns
+        `200`), so no `Idempotency-Key` is needed. No webhook is emitted.
+
+        Users created via `POST /users/register` without a referral code have no
+        referral code to pass on and return `409`.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Pay3 user id (currently a UUID).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              additionalProperties: false
+              properties:
+                enabled:
+                  type: boolean
+                  example: true
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [userId, inviteCode, invitedByUserId, inviteEnabled]
+                additionalProperties: false
+                properties:
+                  userId:
+                    type: string
+                    example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
+                  inviteCode:
+                    type: string
+                    nullable: true
+                    description: The user's own invite code, issued by Pay3 at sign-up (the code their invite link carries).
+                    example: K7M2Q9XA
+                  invitedByUserId:
+                    type: string
+                    nullable: true
+                    description: |
+                      The user who invited them through their invite link. Null for users who
+                      signed up with a referral code directly or were created via `POST /users/register`.
+                    example: null
+                  inviteEnabled:
+                    type: boolean
+                    description: |
+                      Whether the partner has enabled this user's invite link
+                      (`PUT /users/{userId}/invite`). False for users created via `POST /users/register`.
+                    example: false
+        "400":
+          description: "`enabled must be a boolean` — `enabled` is missing or not a boolean, or the body has other keys"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Insufficient scope (`users:invite` required; `users:write` satisfies it)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found, or not attributed to the calling client
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: "`invite_not_available: this user was created without a referral code`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: "`Failed to resolve user`"
           content:
             application/json:
               schema:
@@ -2303,18 +2521,25 @@ paths:
                         description: Customer-facing price (USD, fixed 2 decimals).
                         pattern: '^\d+\.\d{2}$'
                         example: "5.00"
-                      estimated_shipping:
+                      shipping:
                         type: string
                         nullable: true
                         description: >
-                          Shipping estimate above the baseline, same fixed 2 decimal format.
-                          `null` when it does not apply (virtual cards, or `country` omitted) —
-                          `null` means "not applicable", not "free".
+                          Delivery fee for a physical card, charged on top of `price` and paid in
+                          full by the cardholder (same fixed 2 decimal format).
+                          `null` for virtual cards, when `country` is omitted, and when the carrier
+                          fee cannot be retrieved — `null` means "not available", not "free".
+                          When it is `null`, `total` is `null` too and `issue_card` returns 400.
                         pattern: '^\d+\.\d{2}$'
                         example: null
                       total:
                         type: string
-                        description: Amount actually charged at issuance (USD, fixed 2 decimals).
+                        nullable: true
+                        description: >
+                          Amount actually charged at issuance = `price` + `shipping`
+                          (USD, fixed 2 decimals). Fund the user's balance for this value, not for
+                          `price`. Held for 48 hours; issuing later re-quotes the shipping fee.
+                          `null` when the shipping fee could not be retrieved.
                         pattern: '^\d+\.\d{2}$'
                         example: "5.00"
               example:
@@ -2325,7 +2550,7 @@ paths:
                   country: null
                   currency: USD
                   price: "5.00"
-                  estimated_shipping: null
+                  shipping: null
                   total: "5.00"
                 code: 0
         "400":
@@ -2348,19 +2573,15 @@ paths:
       description: |
         Lists the cards your users can be issued: one entry per BIN and card type
         (`virtual` / `physical`) that is enabled in the Pay3 card BIN catalog and
-        available to your client. Use these `bin` / `type` pairs for `cardPrices` on
-        `POST /referral-codes` and `PATCH /referral-codes/{code}`.
+        available to your client.
 
         `defaultPrice` is the issuance price charged to a user who has no price of their
         own — for example a user who signed up with a referral code that has no
-        `cardPrices` entry for that card. It is your client's default price, or the
-        standard Pay3 price when your client has none. Issuance costs are never returned.
+        `cardPrices` for that card. Use it as the reference when setting per-code prices
+        with `PATCH /referral-codes/{code}`.
 
-        Takes no body, no `userId` and no query parameters; any query parameter returns
-        `400`. Restrictions Pay3 sets for an individual user can still narrow what that
-        user can be issued; `POST /card/quote` returns the exact price for a given user.
-
-        Scope: `card:read`.
+        Takes no query parameters; any parameter returns 400. Individual per-user
+        restrictions set by Pay3 can still narrow what a specific user can be issued.
       tags:
         - Card Service
       security:
@@ -2378,15 +2599,19 @@ paths:
                   data:
                     type: array
                     items:
-                      $ref: "#/components/schemas/CardCatalogItem"
-              example:
-                data:
-                  - bin: "45492418"
-                    type: virtual
-                    name: Pay3 Card
-                    defaultPrice: "5.00"
+                      type: object
+                      required: [bin, type, name, defaultPrice]
+                      additionalProperties: false
+                      properties:
+                        bin: { type: string, example: "45492418" }
+                        type: { type: string, enum: [virtual, physical], example: virtual }
+                        name: { type: string, example: "Pay3 Card" }
+                        defaultPrice:
+                          type: string
+                          description: USD, 2-decimal string (same format as `price` in `/card/quote`).
+                          example: "5.00"
         "400":
-          description: "Unknown query parameter (`Unknown query parameter \"<name>\". Accepted: (none)`)"
+          description: "Unknown query parameter (`Accepted: (none)`)"
           content:
             application/json:
               schema:
@@ -2397,8 +2622,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: "The catalog or its prices could not be read (`Failed to fetch card catalog`). Nothing partial is returned; retry."
+        "403":
+          description: Insufficient scope (`card:read` required)
           content:
             application/json:
               schema:
@@ -3569,16 +3794,11 @@ paths:
     get:
       tags:
         - Referral codes
-      summary: List the partner's referral codes
+      summary: List the partner's referral codes (spec §7)
       operationId: listReferralCodes
       description: |
         Returns **all** of the partner's referral codes, newest first. There is no
-        paging and no filtering. There is no endpoint for reading a single code; use this
-        list, or the response of `POST` / `PATCH`.
-
-        Each code carries its card prices (`cardPrices`) and the deposit fee rate that
-        currently applies to its users (`depositFeeRate`, with `depositFeeRateSource`).
-        `defaultDepositFeeRate` is your client's default rate.
+        paging and no filtering.
 
         **This endpoint accepts no query parameters.** Any parameter returns `400`
         with `Accepted: (none)` — a filter that looks applied but is not would be
@@ -3592,45 +3812,18 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [data, defaultDepositFeeRate]
+                required: [data]
                 properties:
                   data:
                     type: array
                     items:
-                      allOf:
-                        - $ref: "#/components/schemas/ReferralCode"
-                        - required: [depositFeeRate, depositFeeRateSource]
+                      $ref: "#/components/schemas/ReferralCode"
                   defaultDepositFeeRate:
                     type: string
                     description: |
-                      Your client's default deposit fee rate: the rate that applies to users of a
-                      code with no rate of its own. Decimal fraction as a string (`"0.019"` = 1.9%,
-                      `"0"` = no fee).
+                      Your client's default deposit fee rate: the rate that applies to users
+                      of a code with no rate of its own. Decimal fraction (`"0.019"` = 1.9%).
                     example: "0.019"
-              example:
-                data:
-                  - code: PARTNER-A
-                    enabled: true
-                    label: Agency A
-                    link: "https://app.pay-3.io/?ref=PARTNER-A"
-                    cardPrices:
-                      - bin: "45492418"
-                        type: virtual
-                        price: "12.00"
-                    depositFeeRate: "0.015"
-                    depositFeeRateSource: code
-                    createdAt: "2026-01-15T09:30:00.000Z"
-                    updatedAt: "2026-01-15T09:30:00.000Z"
-                  - code: PARTNER-B
-                    enabled: true
-                    label: null
-                    link: "https://app.pay-3.io/?ref=PARTNER-B"
-                    cardPrices: []
-                    depositFeeRate: "0.019"
-                    depositFeeRateSource: client
-                    createdAt: "2026-01-10T09:30:00.000Z"
-                    updatedAt: "2026-01-10T09:30:00.000Z"
-                defaultDepositFeeRate: "0.019"
         "400":
           description: Unknown query parameter
           content:
@@ -3647,7 +3840,7 @@ paths:
     post:
       tags:
         - Referral codes
-      summary: Register a referral code
+      summary: Register a referral code (spec §7)
       operationId: createReferralCode
       description: |
         Codes are matched **case-insensitively** and registered first-come,
@@ -3659,15 +3852,10 @@ paths:
         Attribution is fixed at signup time, so deleting a code never rewrites
         the users already attributed through it.
 
-        `cardPrices` (optional) sets the card issuance prices for users who sign up with
-        this code, and `depositFeeRate` (optional) their deposit fee rate. Omitted, the code
-        has no prices or rate of its own and your client's defaults apply. If the same code
-        existed before and was deleted, the prices and rate sent here (none, if omitted)
-        replace its old ones.
-
-        Every field is validated before the code is created: a `400` creates nothing. If the
-        prices or rate cannot be saved, the code is not created either (`500`), so a code is
-        never left in place with the default price or rate.
+        `cardPrices` (optional) sets the card issuance price for users who sign up
+        with this code, and `depositFeeRate` (optional) their deposit fee rate.
+        If the same code existed before and was deleted, the prices and rate sent
+        here (none, if omitted) replace its old ones.
       security:
         - bearerAuth: []
       requestBody:
@@ -3688,21 +3876,6 @@ paths:
                   $ref: "#/components/schemas/ReferralCodeCardPricesInput"
                 depositFeeRate:
                   $ref: "#/components/schemas/ReferralCodeDepositFeeRateInput"
-            examples:
-              withPricing:
-                summary: Code with a card price and a deposit fee rate
-                value:
-                  code: PARTNER-A
-                  label: Agency A
-                  cardPrices:
-                    - bin: "45492418"
-                      type: virtual
-                      price: "12.00"
-                  depositFeeRate: "0.015"
-              plain:
-                summary: Code using your client's default price and rate
-                value:
-                  code: PARTNER-B
       responses:
         "201":
           description: Code registered
@@ -3710,25 +3883,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReferralCode"
-              example:
-                code: PARTNER-A
-                enabled: true
-                label: Agency A
-                link: "https://app.pay-3.io/?ref=PARTNER-A"
-                cardPrices:
-                  - bin: "45492418"
-                    type: virtual
-                    price: "12.00"
-                depositFeeRate: "0.015"
-                depositFeeRateSource: code
-                createdAt: "2026-01-15T09:30:00.000Z"
-                updatedAt: "2026-01-15T09:30:00.000Z"
         "400":
-          description: |
-            Invalid code format, an invalid `cardPrices` entry, or an invalid `depositFeeRate`.
-            Nothing is created. The `message` names the problem, for example
-            `amount for bin 45492418 is below the minimum chargeable price` or
-            `depositFeeRate must be a decimal between 0 and 0.05 with up to 5 decimal places (e.g. "0.019"), or null`.
+          description: Invalid code format, an invalid `cardPrices` entry, or an invalid `depositFeeRate` (nothing is created)
           content:
             application/json:
               schema:
@@ -3739,8 +3895,105 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: "The code could not be saved with its prices and rate (`Failed to create code`). The code is not created; retry."
+
+  /referral-codes/stats:
+    get:
+      tags:
+        - Referral codes
+      summary: Sign-ups, KYC approvals and card issuances per referral code
+      operationId: getReferralCodeStats
+      description: |
+        One row per code: every current code (including codes with no activity)
+        and deleted codes that still have attributed users, so past figures do not
+        change when a code is deleted. Sorted by `registered` (highest first), then
+        by code.
+
+        - `registered` — users who signed up with the code during the period (by sign-up time).
+        - `kycApproved` — of those users, how many currently have `kycStatus` `approved`
+          (the same evaluation as `GET /users/{userId}`).
+        - `cardsIssued` — cards issued during the period to users of the code, by card
+          type, regardless of when the users signed up. Issued cards, including cards
+          later deleted, are counted.
+        - `issuanceAmount` — total card issuance price charged for those cards (USD,
+          2-decimal string). Physical card shipping is not included.
+
+        `from` and `to` mean the same as on `/pool/ledger` and `/pool/transfers`: both ends
+        are inclusive, a date-only value is interpreted in UTC, and **a date-only `to`
+        includes that whole day** (`from=2026-09-01&to=2026-09-30` covers September;
+        `from=2026-09-15&to=2026-09-15` is one day).
+
+        `stats` is also a valid code name: `PATCH` and `DELETE` on this path act on a code
+        named `stats`. Only `GET` returns the stats.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, example: "2026-09-01" }
+          description: ISO 8601 date or datetime. Start of the period, inclusive. Omit for no lower bound.
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, example: "2026-09-30" }
+          description: |
+            ISO 8601 date or datetime. End of the period, inclusive; a date-only value
+            includes that whole day (UTC). Omit for no upper bound.
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, from, to]
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [code, registered, kycApproved, cardsIssued, issuanceAmount]
+                      additionalProperties: false
+                      properties:
+                        code: { type: string, example: "PARTNER-A" }
+                        registered: { type: integer, example: 12 }
+                        kycApproved: { type: integer, example: 9 }
+                        cardsIssued:
+                          type: object
+                          required: [virtual, physical]
+                          additionalProperties: false
+                          properties:
+                            virtual: { type: integer, example: 7 }
+                            physical: { type: integer, example: 1 }
+                        issuanceAmount: { type: string, example: "91.00" }
+                  from:
+                    type: string
+                    nullable: true
+                    description: The `from` query value as sent, or null.
+                    example: "2026-09-01"
+                  to:
+                    type: string
+                    nullable: true
+                    description: The `to` query value as sent, or null.
+                    example: "2026-09-30"
+        "400":
+          description: |
+            Invalid date, `from` not earlier than `to`
+            (`from must not be later than to`), or an unknown query
+            parameter (`Accepted: from, to`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Insufficient scope (`referrals:read` required)
           content:
             application/json:
               schema:
@@ -3750,25 +4003,20 @@ paths:
     patch:
       tags:
         - Referral codes
-      summary: Enable or disable a referral code, or set its card prices and deposit fee rate
+      summary: Enable or disable a referral code, or set its card prices and deposit fee rate (spec §7)
       operationId: updateReferralCode
       description: |
-        `enabled`, `cardPrices` and `depositFeeRate` are the only mutable fields. Send at
-        least one of them; omitted fields are left unchanged.
-
+        `enabled`, `cardPrices` and `depositFeeRate` are the only mutable fields; send any
+        combination of them.
         A disabled code stops attributing new signups; users already attributed keep
         their attribution.
 
-        `cardPrices` replaces the whole set of the code's card prices (`[]` removes every
-        price; `null` is not accepted). A change applies to every user of the code from
-        their next card issuance; cards already issued are not affected.
+        `cardPrices` replaces the whole set (`[]` removes every price). A change applies
+        to all users of the code from their next card issuance; issued cards are not affected.
 
-        `depositFeeRate` sets the code's deposit fee rate; `null` removes it, so your
-        client's default rate applies again. A change applies to every user of the code
-        from their next deposit.
-
-        Every field is validated before anything is saved: a `400` changes nothing.
-        Re-sending the same request is safe.
+        `depositFeeRate` sets the code's deposit fee rate (`null` removes it, so your client's
+        default rate applies again). A change applies to all users of the code from their
+        next deposit.
       security:
         - bearerAuth: []
       parameters:
@@ -3787,24 +4035,6 @@ paths:
                   $ref: "#/components/schemas/ReferralCodeCardPricesInput"
                 depositFeeRate:
                   $ref: "#/components/schemas/ReferralCodeDepositFeeRateInput"
-            examples:
-              setPricing:
-                summary: Replace the card prices and set the deposit fee rate
-                value:
-                  cardPrices:
-                    - bin: "45492418"
-                      type: virtual
-                      price: "15.00"
-                  depositFeeRate: "0.02"
-              clearPricing:
-                summary: Remove the code's prices and rate (client defaults apply)
-                value:
-                  cardPrices: []
-                  depositFeeRate: null
-              disable:
-                summary: Disable the code
-                value:
-                  enabled: false
       responses:
         "200":
           description: Updated
@@ -3812,24 +4042,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReferralCode"
-              example:
-                code: PARTNER-A
-                enabled: true
-                label: Agency A
-                link: "https://app.pay-3.io/?ref=PARTNER-A"
-                cardPrices:
-                  - bin: "45492418"
-                    type: virtual
-                    price: "15.00"
-                depositFeeRate: "0.02"
-                depositFeeRateSource: code
-                createdAt: "2026-01-15T09:30:00.000Z"
-                updatedAt: "2026-01-15T09:30:00.000Z"
         "400":
-          description: |
-            An empty body, a field other than `enabled` / `cardPrices` / `depositFeeRate`
-            (`` only `enabled`, `cardPrices` and `depositFeeRate` can be updated; rename by deleting and creating a new code ``),
-            an invalid `cardPrices` entry, or an invalid `depositFeeRate`. Nothing is changed.
+          description: A field other than `enabled` / `cardPrices` / `depositFeeRate`, an empty body, an invalid `cardPrices` entry, or an invalid `depositFeeRate` (nothing is changed)
           content:
             application/json:
               schema:
@@ -3840,26 +4054,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: "The change was not fully saved (`Failed to update card prices` / `Failed to update deposit fee rate`). Re-send the same request."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
 
     delete:
       tags:
         - Referral codes
-      summary: Delete a referral code
+      summary: Delete a referral code (spec §7)
       operationId: deleteReferralCode
       description: |
         Deletes exactly one code, matched case-insensitively. Wildcard characters
         carry no meaning here — `DELETE /referral-codes/%` is a `404`, not a bulk
         delete. Users already attributed through the code keep their attribution.
-
-        The card prices and deposit fee rate of a deleted code keep applying to the users
-        who signed up with it. Creating the same code again replaces them with the prices
-        and rate sent in that `POST` (none, if omitted).
       security:
         - bearerAuth: []
       parameters:
@@ -4033,9 +4237,7 @@ components:
           example: "https://app.pay-3.io/?ref=PARTNER-A"
         cardPrices:
           type: array
-          description: |
-            Card issuance prices set on the code, sorted by `bin` then `type`. Empty when none
-            is set (the client's default price applies).
+          description: Card issuance prices set on the code. Empty when none is set.
           items:
             type: object
             required: [bin, type, price]
@@ -4044,109 +4246,56 @@ components:
               type: { type: string, enum: [virtual, physical] }
               price:
                 type: string
-                description: USD, fixed 2-decimal string.
+                description: USD with 2 decimal places.
                 example: "12.00"
         depositFeeRate:
           type: string
           description: |
-            The deposit fee rate that currently applies to the code's users when they deposit
-            stablecoins from their own external wallet, as a decimal fraction string
-            (`"0.015"` = 1.5%, `"0"` = no fee). Always present in `GET /referral-codes`.
-            Omitted from a `POST` / `PATCH` response only in the rare case the saved rate
-            could not be read back.
+            The deposit fee rate that applies to the code's users when they deposit stablecoins
+            from their own wallet, as a decimal fraction (`"0.015"` = 1.5%).
           example: "0.015"
         depositFeeRateSource:
           type: string
           enum: [code, client]
-          description: "`code`: set on this code. `client`: no rate on the code, so your client's default rate applies."
+          description: "`code`: set on this code. `client`: your client's default rate applies."
         createdAt: { type: string, format: date-time }
-        updatedAt:
-          type: string
-          format: date-time
-          description: Changes when `enabled` changes. Setting prices or the rate does not change it.
+        updatedAt: { type: string, format: date-time }
 
     ReferralCodeCardPricesInput:
       type: array
       maxItems: 20
       description: |
-        Card issuance prices for users who signed up with the code. **Replaces the whole set**:
-        entries you leave out are removed, and `[]` removes every price. At most one entry per
-        `bin` and `type`; use the pairs listed by `GET /card/catalog`.
-
-        The price a user pays is decided in this order: a price Pay3 has set for that
-        individual user (if any), the code's price, the client's default price, the standard
-        Pay3 price. A code's price applies to every user of the code from their next card
-        issuance.
-
+        Card issuance prices for users who signed up with the code. The price a user pays
+        is decided in this order: the code's price, then the client's default price, then
+        the standard Pay3 price. Replaces the whole set; one entry per `bin` and `type`.
         A price at or below the issuance cost of the card (for physical cards, including
-        production) is rejected with `400`
-        (`amount for bin <bin> is below the minimum chargeable price`). Shipping for physical
-        cards is charged separately and is not part of `price`.
+        production) is rejected with `400`. Shipping is charged separately.
       items:
         type: object
         required: [bin, type, price]
         additionalProperties: false
         properties:
-          bin:
-            type: string
-            pattern: "^[0-9]{6,8}$"
-            example: "45492418"
-          type:
-            type: string
-            enum: [virtual, physical]
+          bin: { type: string, pattern: "^[0-9]{6,8}$", example: "45492418" }
+          type: { type: string, enum: [virtual, physical] }
           price:
-            description: |
-              USD, as a number or a string with up to 2 decimal places (`12`, `"12.5"`,
-              `"12.00"`). Greater than 0 and at most 10000.
             oneOf:
-              - type: string
-                pattern: "^\\d{1,5}(\\.\\d{1,2})?$"
-              - type: number
-                exclusiveMinimum: true
-                minimum: 0
-                maximum: 10000
+              - { type: number }
+              - { type: string, pattern: "^\\d{1,5}(\\.\\d{1,2})?$" }
+            description: USD with up to 2 decimal places.
             example: "12.00"
 
     ReferralCodeDepositFeeRateInput:
+      oneOf:
+        - { type: number, minimum: 0, maximum: 0.05, nullable: true }
+        - { type: string, pattern: "^0(\\.\\d{1,5})?$", nullable: true }
       description: |
-        Deposit fee rate for users who signed up with the code, charged on stablecoins they
-        deposit from their own external wallet to their card. Decimal fraction from 0 to 0.05
-        with up to 5 decimal places (`"0.015"` = 1.5%); a string must start with `0`. The
-        string form is recommended. `null` means no rate on the code, so your client's default
-        rate applies. `"0"` means no fee for the code's users, even when the default is higher.
-
-        The rate a user pays is decided in this order: a rate Pay3 has set for that individual
-        user (if any), the code's rate, the client's default rate; if none is set, no fee is
-        charged. A code's rate applies to every user of the code from their next deposit. It
-        does not apply to deposits into your pool or to charges from your pool to a user
-        (`POST /pool/transfer`). The fee is rounded down to the cent.
-      anyOf:
-        - type: string
-          nullable: true
-          pattern: "^0(\\.\\d{1,5})?$"
-        - type: number
-          nullable: true
-          minimum: 0
-          maximum: 0.05
+        Deposit fee rate for users who signed up with the code, charged when they deposit
+        stablecoins from their own wallet (your revenue in full). Decimal fraction from 0 to
+        0.05 with up to 5 decimal places (`"0.015"` = 1.5%). `null` removes the code's rate, so
+        your client's default rate applies again. The rate a user pays is decided in this
+        order: the code's rate, then the client's default rate. Pool charges to users are free,
+        and the fee on deposits to your pool is separate.
       example: "0.015"
-
-    CardCatalogItem:
-      type: object
-      required: [bin, type, name, defaultPrice]
-      additionalProperties: false
-      properties:
-        bin: { type: string, example: "45492418" }
-        type: { type: string, enum: [virtual, physical], example: virtual }
-        name:
-          type: string
-          description: Display name of the card.
-          example: "Pay3 Card"
-        defaultPrice:
-          type: string
-          description: |
-            Issuance price for a user with no price of their own (your client's default price,
-            or the standard Pay3 price). USD, fixed 2-decimal string, like `price` in `/card/quote`.
-          example: "5.00"
 
     Paging:
       type: object

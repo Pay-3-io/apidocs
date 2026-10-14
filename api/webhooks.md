@@ -73,8 +73,8 @@ Process deliveries idempotently, de-duplicating on the body's `id` (equal to `X-
 
 | Event | Emitted when | `data` fields |
 |---|---|---|
-| `user.registered` | A new user signs up through your referral link | `userId, email, name, partnerRefCode, registeredAt` |
-| `user.kyc.updated` | The result of either verification stage changes | `userId, kycStatus, stage, stageStatus, updatedAt` |
+| `user.registered` | A new user signs up through your referral link, or through the invite code of one of your users | `userId, email, name, partnerRefCode, registeredAt, inviteCode, invitedByUserId, invitedByInviteCode, inviteEnabled` |
+| `user.kyc.updated` | The result of either verification stage changes | `userId, kycStatus, stage, stageStatus, name, updatedAt` |
 | `card.issued` | A virtual card is issued | `userId, cardId, cardType, issuedAt` |
 | `card.activated` | A physical card is activated | `userId, cardId, cardType, activatedAt` |
 | `pool.deposit.credited` | A pool credit is applied | `referenceId, grossAmount, feeAmount, netAmount, available, currency, transactionHash, chain, sourceAddress, creditedAt` |
@@ -83,11 +83,22 @@ Process deliveries idempotently, de-duplicating on the body's `id` (equal to `X-
 
 **`user.registered`** fires only for browser sign-ups carrying `?ref=`; `POST /users/register` does not emit it, because its response already returns `userId`. `partnerRefCode` is the same value that `GET /users/list` returns as `referralCode` for that user, so the two can be compared directly.
 
-**`user.kyc.updated`** covers two stages — first-line identity verification (`identity`) and the card issuer's own review (`card_issuer`) — and is sent whenever either changes. `stage` is the stage that changed and `stageStatus` its new status (`approved`, `rejected`, `pending`). `kycStatus` is the overall status, where `approved` means charge instructions and card issuance will pass (same rules as [Users](users.md)). When only the first stage is approved, `kycStatus` is still `pending`, so wait for the event where `kycStatus` becomes `approved`.
+A user who signs up with the invite code of one of your users (the code in that user's Friends screen) also becomes your user and fires `user.registered`, provided you have enabled that user's invite link. With the link disabled, the sign-up is registered without a referral and no `user.registered` is sent. In that case `partnerRefCode` is still the **top-level referral code** — the one the inviter signed up with, inherited unchanged however many levels deep the chain goes — and the direct inviter is reported separately:
+
+- `inviteCode` — this user's own invite code, issued by Pay3 at sign-up. It is the code their invite link carries.
+- `invitedByUserId` / `invitedByInviteCode` — the user who invited them, and that user's invite code. Both are `null` for users who signed up with a referral code directly.
+- `inviteEnabled` — whether you have enabled this user's invite link (`PUT /users/{userId}/invite`, see [Users](users.md)). Always `false` at sign-up.
 
 ```json
-{ "userId": "<uuid>", "kycStatus": "pending",  "stage": "identity",    "stageStatus": "approved", "updatedAt": "..." }
-{ "userId": "<uuid>", "kycStatus": "approved", "stage": "card_issuer", "stageStatus": "approved", "updatedAt": "..." }
+{ "userId": "<B>", "email": "b@example.com", "name": null, "partnerRefCode": "J01", "registeredAt": "...",
+  "inviteCode": "K7M2Q9XA", "invitedByUserId": "<A>", "invitedByInviteCode": "P4HZ8N2C", "inviteEnabled": false }
+```
+
+**`user.kyc.updated`** covers two stages — first-line identity verification (`identity`) and the card issuer's own review (`card_issuer`) — and is sent whenever either changes. `stage` is the stage that changed and `stageStatus` its new status (`approved`, `rejected`, `pending`). `kycStatus` is the overall status, where `approved` means charge instructions and card issuance will pass (same rules as [Users](users.md)). When only the first stage is approved, `kycStatus` is still `pending`, so wait for the event where `kycStatus` becomes `approved`. `name` is the verified legal name (first and last name) and is set only when `kycStatus` is `approved`; otherwise it is `null`. For users who sign up by email, `user.registered` carries `name: null` because the name is only known after identity verification.
+
+```json
+{ "userId": "<uuid>", "kycStatus": "pending",  "stage": "identity",    "stageStatus": "approved", "name": null,         "updatedAt": "..." }
+{ "userId": "<uuid>", "kycStatus": "approved", "stage": "card_issuer", "stageStatus": "approved", "name": "Taro Yamada", "updatedAt": "..." }
 ```
 
 **`card.activated`** applies to physical cards only, so `cardType` is always `physical`. It fires on successful activation and not on re-activation. Virtual cards are usable as soon as they are issued and emit `card.issued` only.
