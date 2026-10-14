@@ -92,32 +92,35 @@ Prices an issuance before you commit to it. **No funds move** — the call is pu
 - body: `{ userId, type?, bin?, country? }`
   - `type` (default `"physical"`): `"virtual"` \| `"physical"`. Always pass it explicitly to quote a virtual card.
   - `bin` (optional): see [Card BINs](#card-bins). Omitted, the first BIN that supports the requested form factor is used.
-  - `country` (optional): destination. For `physical`, returns the shipping estimate above the baseline.
-- 200: `{ data: { bin, form_factor, country, currency, price, estimated_shipping, total }, code: 0 }`
-  - `total` is the price actually charged at issuance.
-  - `price`, `total` and `estimated_shipping` are **fixed 2-decimal strings** (`"5.00"`), like every other money field.
-  - `estimated_shipping` is `null` when it does not apply (virtual cards, or `country` omitted). **`null` means "not applicable", not "free".**
+  - `country` (optional): destination. **Required for `physical`** to get a shipping fee — without it `shipping` and `total` come back `null` and issuance is refused.
+- 200: `{ data: { bin, form_factor, country, currency, price, shipping, total }, code: 0 }`
+  - `price` is the issuance fee. `shipping` is the delivery fee, charged **on top of** `price` and paid in full by the cardholder.
+  - `total` (= `price` + `shipping`) is the amount actually charged at issuance. **Fund the user's balance for `total`, not `price`.**
+  - `price`, `shipping` and `total` are **fixed 2-decimal strings** (`"5.00"`), like every other money field.
+  - `shipping` is `null` for virtual cards, when `country` is omitted, and when the carrier fee cannot be retrieved. **`null` means "not available", not "free"** — `total` is then `null` too, and `issue_card` returns 400 (`Shipping quote unavailable, please retry`).
+  - The quote is held for **48 hours**; issuing within that window charges exactly the quoted `total`. After that the fee is re-quoted at issuance.
 
 ```json
-{ "bin": "45492418", "form_factor": "virtual", "country": null, "currency": "USD", "price": "5.00", "estimated_shipping": null, "total": "5.00" }
+{ "bin": "45492418", "form_factor": "virtual", "country": null, "currency": "USD", "price": "5.00", "shipping": null, "total": "5.00" }
 ```
+
+```json
+{ "bin": "45492418", "form_factor": "physical", "country": "JP", "currency": "USD", "price": "100.00", "shipping": "12.00", "total": "112.00" }
+```
+
+> Changed 2026-09-22: `estimated_shipping` (a non-charged indication) was replaced by `shipping` (the fee actually charged). Physical shipping is now billed separately from the issuance fee.
 
 - 400: unsupported `bin` / `type` combination (`{ "message": "Unsupported card bin/form factor: <bin>/<form factor>", "code": 400 }`).
 
 ### GET /card/catalog
 
-Lists the cards your users can be issued, with the price that applies when no other price is set. Use it to find the `bin` / `type` pairs for [card prices per code](referral-codes.md#card-prices-per-code). Scope: `card:read`.
+Lists the cards your users can be issued, with the price that applies when no other price is set. Scope: `card:read`.
 
-```bash
-curl -s "$BASE_URL/card/catalog" -H "Authorization: Bearer $TOKEN"
-```
-
-- No body and no `userId`. **No query parameters are accepted**; any parameter returns `400` (`Unknown query parameter "<name>". Accepted: (none)`).
+- query: none (any parameter returns 400)
 - 200: `{ data: [{ bin, type, name, defaultPrice }] }`
   - One entry per BIN and `type` (`"virtual"` \| `"physical"`) that is enabled in the [card BIN catalog](#card-bins) and available to your client.
-  - `name` is the card's display name.
-  - `defaultPrice` is the issuance price for a user who has no price of their own — for example a user whose referral code has no `cardPrices` entry for that card. It is your client's default price, or the standard Pay3 price when your client has none. It is a **fixed 2-decimal string**, like `price` in `/card/quote`.
-  - Issuance costs are never returned.
+  - `defaultPrice` is the issuance price for a user without a price of their own — for example a user whose [referral code](referral-codes.md) has no `cardPrices` for that card. It is a **fixed 2-decimal string**, like `price` in `/card/quote`.
+  - Costs are never returned.
 
 ```json
 { "data": [
@@ -125,9 +128,7 @@ curl -s "$BASE_URL/card/catalog" -H "Authorization: Bearer $TOKEN"
 ] }
 ```
 
-- 500 `Failed to fetch card catalog`: the catalog or its prices could not be read. Nothing partial or estimated is returned; retry.
-
-Restrictions Pay3 sets for an individual user can still narrow what that user can be issued; `POST /card/quote` returns the exact price for a given user.
+Per-user restrictions set by Pay3 can still narrow what an individual user can be issued; `/card/quote` returns the exact amount for a given user.
 
 ### POST /card/issue_card
 
@@ -177,7 +178,7 @@ Accepted `bin` values come from the Pay3 card BIN catalog, which is fail-closed:
 | `45492418` | Visa / Pay3 Card | virtual |
 | `49387519` | Visa / White Card | physical |
 
-Each BIN supports specific form factors, so a `bin` / `type` combination the catalog does not allow returns 400 (never 500). Production values are provided separately. `GET /card/catalog` returns the `bin` / `type` pairs available to your client in the environment you call.
+Each BIN supports specific form factors, so a `bin` / `type` combination the catalog does not allow returns 400 (never 500). Production values are provided separately.
 
 ### POST /card/issuance_events
 
@@ -238,18 +239,17 @@ Tops up user balances from a pool deposit: balance, transfer instructions and le
 - `GET /pool/transfer/{transferId}` / `GET /pool/transfers` (`status` / `userId` / `from` / `to` / `limit` / `offset`)
 - `GET /pool/ledger` (`type` / `from` / `to` / `limit` / `offset`)
 
-The list endpoints (`/pool/transfers`, `/pool/ledger`, `/users/list`, `GET /referral-codes`, `GET /card/catalog`) accept **a fixed set of parameter names and reject anything else with 400**, so a misspelling never comes back as an unfiltered `200` (see [Query parameter validation](pool.md#query-parameter-validation)).
+The list endpoints (`/pool/transfers`, `/pool/ledger`, `/users/list`, `GET /referral-codes`, `GET /referral-codes/stats`) accept **a fixed set of parameter names and reject anything else with 400**, so a misspelling never comes back as an unfiltered `200` (see [Query parameter validation](pool.md#query-parameter-validation)).
 
 `from` and `to` filter on `createdAt`. **A date-only value is interpreted in UTC and `to` covers the whole day**, so a single day is `?from=2026-09-15&to=2026-09-15` (see [Date boundaries](pool.md#date-boundaries)).
 
 ## Referral Codes
 
-Register, enable, disable and delete referral codes, attribute users to them, and set a card issuance price and a deposit fee rate per code. → **[Referral Codes](referral-codes.md)**
+Register, enable, disable and delete referral codes, set their card prices and deposit fee rates, and attribute users to them. → **[Referral Codes](referral-codes.md)**
 
-- `GET /referral-codes` / `POST /referral-codes` (`cardPrices` / `depositFeeRate` optional)
-- `PATCH /referral-codes/{code}` (`enabled` / `cardPrices` / `depositFeeRate`, at least one) / `DELETE /referral-codes/{code}`
-
-The card price and deposit fee rate set on a code apply to every user who signed up with that code. The cards you can price, and the price that applies otherwise, come from `GET /card/catalog`.
+- `GET /referral-codes` / `POST /referral-codes`
+- `PATCH /referral-codes/{code}` / `DELETE /referral-codes/{code}`
+- `GET /referral-codes/stats` (`from` / `to`, same date boundaries as the pool endpoints) — sign-ups, KYC approvals and card issuances per code
 
 `POST /users/register` accepts a `referral_code`.
 
@@ -257,8 +257,9 @@ The card price and deposit fee rate set on a code apply to every user who signed
 
 List your users and read their KYC and card issuance status. → **[Users](users.md)**
 
-- `GET /users/list` (scope `users:status`; accepts only `limit` 1–200 and `offset`)
+- `GET /users/list` (scope `users:status`; accepts only `limit` 1–200, `offset`, `referralCode` and `kycStatus`)
 - `GET /users/{userId}` (scope `users:status`; unattributed and non-existent ids both return 404)
+- `PUT /users/{userId}/invite` (scope `users:invite`, satisfied by `users:write`; enables or disables the user's invite link)
 
 The set of users returned by the list, accepted by the lookup, and accepted by `POST /pool/transfer` is **identical**.
 
@@ -274,7 +275,7 @@ Secrets — API keys and signing keys — are shown in clear text only once, at 
 
 Unrecognised paths and unsupported HTTP methods return a **JSON 404**. This holds for `/pool/*`, `/referral-codes*`, `/users/*` and `/oauth/*`.
 
-`/kyc/*` and `/card/*` (except `GET /card/catalog`, which takes no body) resolve the `userId` in the body before routing on the path, so what an unknown sub-path or unsupported method returns there depends on the body you sent:
+`/kyc/*` and `/card/*` resolve the `userId` in the body before routing on the path, so what an unknown sub-path or unsupported method returns there depends on the body you sent:
 
 | Body sent | Response from `/card/<unknown>` or `/kyc/<unknown>` |
 |---|---|

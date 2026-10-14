@@ -228,7 +228,7 @@ $ curl -s "$BASE_URL/pool/ledger?type=charge" -H "Authorization: Bearer $TOKEN"
 
 ## Query parameters
 
-On the list endpoints (`GET /pool/transfers`, `GET /pool/ledger`, `GET /users/list`, `GET /referral-codes`) and on `GET /pool/balance`, values and parameter names are validated strictly: out-of-range values, malformed values, and unknown names all return `400` with a body of the form `{ "message": ..., "code": 400 }`, rather than being clamped, ignored, or answered with an empty `200`. A typo is therefore never indistinguishable from "no rows".
+On the list endpoints (`GET /pool/transfers`, `GET /pool/ledger`, `GET /users/list`, `GET /referral-codes`, `GET /referral-codes/stats`) and on `GET /pool/balance`, values and parameter names are validated strictly: out-of-range values, malformed values, and unknown names all return `400` with a body of the form `{ "message": ..., "code": 400 }`, rather than being clamped, ignored, or answered with an empty `200`. A typo is therefore never indistinguishable from "no rows".
 
 | Parameter | Accepted values | Default |
 |---|---|---|
@@ -238,6 +238,8 @@ On the list endpoints (`GET /pool/transfers`, `GET /pool/ledger`, `GET /users/li
 | `type` (`/pool/ledger`) | Exactly one of `deposit`, `fee`, `transfer`, `refund`, `withdrawal`, `adjustment` | no filter |
 | `status` (`/pool/transfers`) | Exactly one of `pending`, `settled`, `failed`, `rejected` | no filter |
 | `userId` (`/pool/transfers`) | A uuid | no filter |
+| `referralCode` (`/users/list`) | 3–64 characters of `A-Z`, `a-z`, `0-9`, `-`, `_` (case-insensitive). A well-formed code that is not yours returns an empty `200` page | no filter |
+| `kycStatus` (`/users/list`) | Exactly one of `not_submitted`, `pending`, `approved`, `rejected` | no filter |
 
 An empty value (`?from=`) means "no filter".
 
@@ -252,8 +254,9 @@ $ curl -s "$BASE_URL/pool/ledger?userid=abc" -H "Authorization: Bearer $TOKEN"
 |---|---|
 | `GET /pool/ledger` | `type`, `from`, `to`, `limit`, `offset` |
 | `GET /pool/transfers` | `status`, `userId`, `from`, `to`, `limit`, `offset` |
-| `GET /users/list` | `limit`, `offset` |
+| `GET /users/list` | `limit`, `offset`, `referralCode`, `kycStatus` |
 | `GET /referral-codes` | (none; always returns all codes) |
+| `GET /referral-codes/stats` | `from`, `to` (same date boundaries as below) |
 | `GET /pool/balance` | (none; always returns the current balance) |
 | `GET /pool/deposit_address` | (none; always returns the registered address) |
 
@@ -278,10 +281,10 @@ A single day is `?from=2026-09-15&to=2026-09-15`; there is no need to pass the n
 
 The settlement mode is set per client by Pay3 and cannot be changed through the partner API. `simulate` is the sandbox mode; production values are provided during production onboarding.
 
-- Under `simulate`, funds move from the pool balance to the user's card balance along the same path as in production, so a `settled` instruction really is reflected on the card balance. What the sandbox omits is only the detection of incoming deposits on the production rail; sandbox credits are detected on the sandbox rail and emit `pool.deposit.credited` ([Webhooks](webhooks.md)).
+- In every mode, including `simulate`, funds move from the pool balance to the user's card balance along the same path, so a `settled` instruction really is reflected on the card balance. The mode is a record of which environment the client belongs to; it does not change how an instruction is settled. What the sandbox omits is only the detection of incoming deposits on the production rail; sandbox credits are detected on the sandbox rail and emit `pool.deposit.credited` ([Webhooks](webhooks.md)).
 - If funds cannot be moved — insufficient pool funds, or an error on the card platform — the instruction is recorded as `failed` with a reason and the amount is returned to the pool balance.
 - A client with no mode configured gets `503` from `POST /pool/transfer`. There is no default, so a missing setting can never produce a ledger row without a matching movement.
-- Finalised rows carry `settlementMode`, and the mode is kept in the ledger `metadata`, so sandbox rows never look like production movements.
+- Finalised rows carry `settlementMode`, and the mode is kept in the ledger `metadata`, so sandbox rows can always be told apart from production rows.
 
 ## Notes
 
