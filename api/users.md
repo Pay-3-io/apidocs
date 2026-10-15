@@ -52,6 +52,7 @@ curl -s "$BASE_URL/users/list?limit=50&offset=0" \
         "cardStatus": "issued",
         "inviteCode": "K7M2Q9XA",
         "invitedByUserId": null,
+        "invitedByInviteCode": null,
         "inviteEnabled": false
       }
     ],
@@ -72,6 +73,7 @@ curl -s "$BASE_URL/users/list?limit=50&offset=0" \
 | `cardStatus` | Summary of card issuance: `issued` or `not_issued` |
 | `inviteCode` | The user's own invite code, issued by Pay3 at sign-up (the code their invite link carries) |
 | `invitedByUserId` | The user who invited them. `null` for users who signed up with a referral code directly, or were created through `POST /users/register` |
+| `invitedByInviteCode` | The invite code of the user who invited them (the code they signed up with). Same value as in the [`user.registered`](webhooks.md) webhook. `null` whenever `invitedByUserId` is `null` |
 | `inviteEnabled` | Whether you have enabled this user's invite link (see [PUT /users/{userId}/invite](#put-usersuseridinvite)). `false` for users created through `POST /users/register` |
 
 `cardStatus` is a summary flag taken from Pay3's own records. The list performs no per-user card lookup, so a slow or unavailable card platform never blocks it. Card count, form factor and states such as `frozen` come from `cards` in `GET /users/{userId}`.
@@ -145,12 +147,13 @@ curl -s "$BASE_URL/users/$USER_ID" \
     ],
     "inviteCode": "K7M2Q9XA",
     "invitedByUserId": null,
+    "invitedByInviteCode": null,
     "inviteEnabled": false
   }
   ```
   - A user with no cards returns `"cards": []`, never `null`.
   - Card number, CVV, BIN, billing address, name and email are not included.
-  - `inviteCode`, `invitedByUserId` and `inviteEnabled` mean the same as in [`GET /users/list`](#get-userslist).
+  - `inviteCode`, `invitedByUserId`, `invitedByInviteCode` and `inviteEnabled` mean the same as in [`GET /users/list`](#get-userslist).
 - 403: missing scope.
 - 404: the user id is not attributed to you, or does not exist.
 - 502: card issuance status could not be retrieved. This is distinct from "no cards" — retry rather than treating it as an empty list.
@@ -228,7 +231,7 @@ curl -s -X PUT "$BASE_URL/users/$USER_ID/invite" \
 - Body: `{"enabled": true}` or `{"enabled": false}`. `enabled` is the only accepted key.
 - 200:
   ```json
-  { "userId": "5c3ff529-0000-4000-8000-000000000000", "inviteCode": "K7M2Q9XA", "invitedByUserId": null, "inviteEnabled": true }
+  { "userId": "5c3ff529-0000-4000-8000-000000000000", "inviteCode": "K7M2Q9XA", "invitedByUserId": null, "invitedByInviteCode": null, "inviteEnabled": true }
   ```
   Repeating the same value also returns `200` (the request is idempotent, so no `Idempotency-Key` is needed).
 - 400: `enabled must be a boolean` — `enabled` is missing or not a boolean, or the body has other keys.
