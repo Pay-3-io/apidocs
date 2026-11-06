@@ -229,6 +229,7 @@ Locks or unlocks a card.
 Returns transaction history.
 
 - body: `{ userId, page, limit }`
+- `amount`: Signed from the user's point of view: deposits positive, refunds and reversals positive (money credited back), purchases and fees negative.
 
 ## Partner Pool
 

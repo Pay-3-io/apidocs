@@ -487,6 +487,7 @@ info:
     Returns transaction history.
 
     - body: `{ userId, page, limit }`
+    - `amount`: Signed from the user's point of view: deposits positive, refunds and reversals positive (money credited back), purchases and fees negative.
 
     ## Partner Pool
 
@@ -3310,6 +3311,7 @@ paths:
                           amount:
                             type: number
                             format: float
+                            description: "Signed from the user's point of view: deposits positive, refunds and reversals positive (money credited back), purchases and fees negative."
                             example: 120.75
                           currency:
                             type: string
