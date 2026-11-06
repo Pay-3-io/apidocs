@@ -142,7 +142,7 @@ Points to observe:
 - Issuance requires enough user balance to cover the price. Clients that use the optional [partner pool](pool.md) top up user balances with `POST /pool/transfer`. Insufficient balance produces two distinct outcomes: `400` (refused before any card existed) and `402` (the balance ran out mid-issuance; Pay3 closes the card it had just created). Branch on `status` / `code` rather than hard-coding an amount. See [Endpoints](endpoints.md).
 - `kyc/submit` only *starts* account and card setup, asynchronously. Issuing before setup completes returns `409 Account setup is not complete yet` and no card is created. Wait for the `user.kyc.updated` webhook or check `kycStatus` via `GET /users/{userId}`, then retry (this `409` does not consume the `Idempotency-Key`).
 - Always send an [`Idempotency-Key`](idempotency.md) on operations that move money (card issuance, KYC submit).
-- Cards belong to a [card program](endpoints.md#card-programs) (`program`: `standard` or `collateral`). Pay3 sends each card operation to the right program the same way the Pay3 app does, so you never pass it. `POST /card/balance` returns the user's balance.
+- Cards belong to a [card program](endpoints.md#card-programs) (`program`: `standard` or `collateral`). Pay3 sends each card operation to the right program the same way the Pay3 app does, so you never pass it.
 
 Issuing with an explicit BIN:
 
