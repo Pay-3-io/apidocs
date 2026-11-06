@@ -142,8 +142,8 @@ curl -s "$BASE_URL/users/$USER_ID" \
     "kycStatus": "approved",
     "kyc": { "identity": { "status": "approved" }, "cardIssuer": { "status": "approved" } },
     "cards": [
-      { "cardType": "virtual", "status": "active", "program": "standard" },
-      { "cardType": "physical", "status": "shipped", "program": "standard" }
+      { "cardType": "virtual", "status": "active" },
+      { "cardType": "physical", "status": "shipped" }
     ],
     "inviteCode": "K7M2Q9XA",
     "invitedByUserId": null,
@@ -214,7 +214,6 @@ The overall `kycStatus` is derived as follows.
 
 - `frozen` takes precedence over the form-factor state: an activated physical card that is locked also reports `frozen`.
 - Cancelled and deactivated cards are not listed.
-- Each card carries `program`, the [card program](endpoints.md#card-programs) it belongs to. This list reads the `standard` program only. For the full list across programs, use `POST /card/fetch_cards`.
 
 ## PUT /users/{userId}/invite
 

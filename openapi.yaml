@@ -29,10 +29,10 @@ info:
     curl -X POST "$BASE_URL/oauth/access-token" \
       -H "Content-Type: application/json" \
       -d '{ "clientId": "client_<32 hex>", "clientSecret": "pay3_sk_test_..." }'
-    # => { "success": true, "message": "...", "accessToken": "<token>", "expiresIn": 3600, "tokenType": "Bearer" }
+    # => { "success": true, "message": "...", "accessToken": "<token>" }
     ```
 
-    Send the token as `Authorization: Bearer <accessToken>` on every subsequent call. Tokens expire after `expiresIn` seconds (one hour by default). Only the `Bearer` scheme is accepted; other schemes, or a bare token with no scheme word, return `401`. See **Authentication**.
+    Send the token as `Authorization: Bearer <accessToken>` on every subsequent call. Tokens expire after one hour by default. Only the `Bearer` scheme is accepted; other schemes, or a bare token with no scheme word, return `401`. See **Authentication**.
 
     ## 2. Register a user
 
@@ -120,7 +120,7 @@ info:
     - poll `GET /users/{userId}` until `kycStatus` is `"approved"` (see **Users**; `kyc.cardIssuer.status` must be `approved` as well), or
     - consume the `user.kyc.updated` webhook (**Webhooks**) and act on the event whose `kycStatus` is `"approved"`.
 
-    Before that point, `card/issue_card` and `card/fetch_deposit_address` return `409 Account setup is not complete yet`, and `card/fetch_transactions` returns an empty list.
+    Before that point, `card/issue_card` returns `409` and no card is created.
 
     ### 3.5 Fund the user, then issue
 
@@ -135,23 +135,22 @@ info:
       -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
       -H "Idempotency-Key: <unique-key>" \
       -d '{ "userId": "<uuid>", "type": "virtual" }'
-    # => { "data": { "id": "<card id>", "cardType": "virtual", "status": "active", "last4": "1234", "program": "standard" }, "code": 0 }
+    # => { "data": { "id": "<card id>", "cardType": "virtual", "status": "active", "last4": "1234" }, "code": 0 }
     ```
 
     | Field | Required | Notes |
     |---|---|---|
     | `userId` | yes | The registered user. |
     | `type` | yes | `virtual` or `physical`. |
-    | `amount` | no | Must be omitted or `0`. Any other value returns `400` — fund the user with **`POST /pool/transfer`** instead. |
+    | `amount` | no | Top-up loaded onto the user balance at issuance. Defaults to `0`. Not the issuance price. |
     | `bin` | no | BIN to issue. Defaults to the first BIN that supports the requested form factor (`537100` for virtual in sandbox). See **Endpoints**. |
 
     Points to observe:
 
     - The issuance price is managed by Pay3 and cannot be set through the API.
     - Issuance requires enough user balance to cover the price. Clients that use the optional **partner pool** top up user balances with `POST /pool/transfer`. Insufficient balance produces two distinct outcomes: `400` (refused before any card existed) and `402` (the balance ran out mid-issuance; Pay3 closes the card it had just created). Branch on `status` / `code` rather than hard-coding an amount. See **Endpoints**.
-    - `kyc/submit` only *starts* account and card setup, asynchronously. Issuing before setup completes returns `409 Account setup is not complete yet` and no card is created. Wait for the `user.kyc.updated` webhook or check `kycStatus` via `GET /users/{userId}`, then retry (this `409` does not consume the `Idempotency-Key`).
+    - `kyc/submit` only *starts* account and card setup, asynchronously. Issuing before setup completes returns `409` and no card is created. Wait for the `user.kyc.updated` webhook or check `kycStatus` via `GET /users/{userId}`, then retry with a new `Idempotency-Key`.
     - Always send an **`Idempotency-Key`** on operations that move money (card issuance, KYC submit).
-    - Cards belong to a **card program** (`program`: `standard` or `collateral`). Pay3 sends each card operation to the right program the same way the Pay3 app does, so you never pass it.
 
     Issuing with an explicit BIN:
 
@@ -160,7 +159,7 @@ info:
       -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
       -H "Idempotency-Key: <unique-key>" \
       -d '{ "userId": "<uuid>", "type": "virtual", "bin": "45492418" }'
-    # => { "data": { "id": "...", "cardType": "virtual", "status": "active", "last4": "....", "program": "standard" }, "code": 0 }
+    # => { "data": { "id": "...", "cardType": "virtual", "status": "active", "last4": "...." }, "code": 0 }
     ```
 
     ## 5. Quote a price
@@ -235,13 +234,8 @@ info:
     curl -X POST "$BASE_URL/oauth/access-token" \
       -H "Content-Type: application/json" \
       -d '{ "clientId": "client_<32 hex>", "clientSecret": "pay3_sk_test_..." }'
-    # => { "success": true, "message": "Oauth access token generated successfully",
-    #      "accessToken": "<token>", "expiresIn": 3600, "tokenType": "Bearer" }
+    # => { "success": true, "message": "Oauth access token generated successfully", "accessToken": "<token>" }
     ```
-
-    - `expiresIn`: lifetime of this token in **seconds**, counted from issuance. Refresh before it runs out.
-    - `tokenType`: always `"Bearer"` — the scheme to put in front of the token in `Authorization`.
-    - `expiresIn` and `tokenType` were added on 2026-10-14; `success`, `message` and `accessToken` are unchanged.
 
     This endpoint accepts `POST` only. Other methods return `404 { "message": "Unknown endpoint. Check the HTTP method and path against docs/api.", "code": 404 }`. The method check runs before authentication, so a wrong method never looks like a credentials problem.
 
@@ -250,7 +244,7 @@ info:
     - Send the token as `Authorization: Bearer <accessToken>`.
     - Only the `Bearer` scheme is accepted. The scheme word is case-insensitive, so `bearer` also works. Any other scheme word, or a bare token with no scheme word, returns `401 { "message": "Unauthorized", "code": 401 }`.
     - The header value must be exactly two words separated by a single space. A double space, a tab, or extra words after the token return `401` even when the token itself is valid, so build the value as `"Bearer " + accessToken.trim()`. Trailing whitespace is stripped by HTTP itself and does not cause a `401`.
-    - Tokens expire after `expiresIn` seconds (one hour by default). Request a new one before or after expiry; an expired token returns `401 { "message": "Token expired", "code": 401 }`.
+    - Tokens expire after one hour by default. Request a new one after expiry; an expired token returns `401 { "message": "Token expired", "code": 401 }`.
     - The token carries only a client identifier, an issue time, and an expiry. Its format is an implementation detail and can change without notice, so do not decode it or depend on its contents.
 
     ## Errors
@@ -381,92 +375,36 @@ info:
 
     ## KYC
 
-    Every `/kyc/*` and `/card/*` call (except `GET /card/catalog`) takes a `userId` in the JSON body. Common outcomes for it:
-
-    | Case | Status | Body |
-    |---|---|---|
-    | `userId` missing | 400 | `{ "message": "User ID is required", "code": 400 }` |
-    | `userId` unknown, not a UUID, or belongs to another client | 404 | `{ "message": "User not found", "code": -1 }` (`code` does not match the HTTP status) |
-    | Body is not a JSON object | 400 | `{ "message": "Invalid JSON body", "code": 400 }` |
-
-    Failures reported by Pay3's card or identity platform keep their HTTP status: a `4xx` there is returned to you with the same status and a plain-text `message`; only Pay3-side faults are `500`, which you may retry as-is.
-
     ### POST /kyc/access-token
 
-    Issues a Sumsub access token so you can run the identity verification flow in your own UI. See **Quickstart §3** for the WebSDK recipe.
+    Issues a Sumsub access token so you can run the identity verification flow in your own UI.
 
     - body: `{ userId }`
-    - 200: `{ message, data: { accessToken, userId }, code: 0 }`
+    - 200: `{ data: { accessToken, userId }, code: 0 }`
 
     ### POST /kyc/submit
 
-    Call this after identity verification completes (`reviewStatus: completed`, `reviewAnswer: GREEN` in the WebSDK) to start account and card-platform setup. **Idempotent** — an **Idempotency-Key** is recommended.
+    Call this after identity verification completes to start account and card-platform setup. **Idempotent** — an **Idempotency-Key** is recommended.
 
     - headers: `Idempotency-Key: <unique>`
     - body: `{ userId, applicantId }`
-    - 200: `{ message, data: { applicantId }, code: 0 }`
+    - 200: `{ data: { applicantId }, code: 0 }`
 
-    | Status | Body `message` | Meaning |
-    |---|---|---|
-    | 400 | `Applicant ID is required` | `applicantId` missing |
-    | 400 | `Applicant ID does not belong to this user` | The applicant was created for a different user |
-    | 404 | `applicant_not_found` | The applicant could not be resolved at setup time |
-    | 409 | `Idempotency-Key was already used with a different request body` | Same key, different body |
-
-    Setup runs asynchronously; this call only starts it. Wait for `GET /users/{userId}` → `kycStatus: "approved"` (or the `user.kyc.updated` webhook) before funding the user or issuing a card.
+    Setup runs asynchronously; this call only starts it.
 
     ## Card
 
-    ### Card programs
-
-    Pay3 runs two kinds of card. Every card, catalog entry, quote and transaction says which one it belongs to in a `program` field:
-
-    | `program` | What it is |
-    |---|---|
-    | `"standard"` | A prepaid balance card. The user's balance is funded first (for example with **`POST /pool/transfer`**), and spending draws it down. This is the default and is what every client has today |
-    | `"collateral"` | A card backed by a crypto collateral contract. Spending power is the collateral minus what is in use, not a prepaid balance. Pay3 enables it per user, and only in sandbox for now. The application, consent and contract setup happen in the Pay3 app, not through this API |
-
-    Pay3 decides which program handles each call. The rules are the same as in the Pay3 app, and you never pass a program to card operations:
-
-    | Call | Which program handles it |
-    |---|---|
-    | `quote`, `issue_card` | The program of the `bin` (as listed by `GET /card/catalog`). Without `bin`, `standard` |
-    | `lock_card`, `unlock_card`, `set_card_pin` | The program the card was issued under, looked up from Pay3's own issuance records for that user. A `cardId` that is not one of the user's cards returns 404, as before |
-    | `fetch_cards` | Every program enabled for the user, merged into one list (`standard` cards first) |
-    | `fetch_deposit_address`, `fetch_transactions`, `issuance_events` | `standard` |
-
-    A user without `collateral` enabled sees exactly what they saw before: `standard` only, with the same behaviour.
-
-    Some operations exist on only one program. Calling them for the other returns **400 without doing anything**:
-
-    | Operation | `standard` | `collateral` |
-    |---|---|---|
-    | `quote` | yes | no (issuance is free) |
-    | `issue_card` | yes | yes (virtual only, `amount` must be `0`) |
-    | `fetch_cards`, `lock_card`, `unlock_card` | yes | yes |
-    | `set_card_pin` | yes | no (there are no physical cards) |
-
-    ```json
-    { "message": "set_card_pin is not supported for program collateral", "code": 400 }
-    ```
-
     ### POST /card/application/start
 
-    Starts the card application, or returns the one already in progress.
+    Starts the card application.
 
     - body: `{ userId }`
-    - 200: `{ message, data: { application: { id, created_at, user_id, whitelisted, code_redeemed, phone_verified, email_verified, kyc_verified, personal_data, billing_data, order_data, card_issued, card_issued_on, card_id, kyc_status } }, code: 0 }`
-    - 404: `{ "message": "No ongoing card application present", "code": 404 }` when no application could be started.
-
-    `issue_card` starts an application on its own, so you do not need to call this before issuing.
 
     ### POST /card/application
 
-    Returns the card application in progress.
+    Returns the state of the card application.
 
     - body: `{ userId }`
-    - 200: same shape as `application/start`.
-    - 404: `{ "message": "No ongoing card application present", "code": 404 }` — the user has no application in progress (none was started, or the last one ended with an issued card).
 
     ### POST /card/quote
 
@@ -476,44 +414,38 @@ info:
       - `type` (default `"physical"`): `"virtual"` \| `"physical"`. Always pass it explicitly to quote a virtual card.
       - `bin` (optional): see **Card BINs**. Omitted, the first BIN that supports the requested form factor is used.
       - `country` (optional): destination. **Required for `physical`** to get a shipping fee — without it `shipping` and `total` come back `null` and issuance is refused.
-    - 200: `{ data: { bin, form_factor, country, currency, price, shipping, total, program }, code: 0 }`
+    - 200: `{ data: { bin, form_factor, country, currency, price, shipping, total }, code: 0 }`
       - `price` is the issuance fee. `shipping` is the delivery fee, charged **on top of** `price` and paid in full by the cardholder.
       - `total` (= `price` + `shipping`) is the amount actually charged at issuance. **Fund the user's balance for `total`, not `price`.**
       - `price`, `shipping` and `total` are **fixed 2-decimal strings** (`"5.00"`), like every other money field.
       - `shipping` is `null` for virtual cards, when `country` is omitted, and when the carrier fee cannot be retrieved. **`null` means "not available", not "free"** — `total` is then `null` too, and `issue_card` returns 400 (`Shipping quote unavailable, please retry`).
       - The quote is held for **48 hours**; issuing within that window charges exactly the quoted `total`. After that the fee is re-quoted at issuance.
-      - `program`: the **card program** that would issue this card.
-      - For a user who can apply Pay3 points (P3P) to the issuance fee, the quote also carries the breakdown:
-        `issuance_fee` (= `price`), `points_applied` (integer points), `points_applied_usd`, `charge` (cash still due: `issuance_fee` − `points_applied_usd` + `shipping`) and `required_balance` (balance needed before issuing).
-        The USD values are fixed 2-decimal strings. `charge` and `required_balance` are `null` when `shipping` is unknown.
-        These keys are absent for users that cannot use points (most partner users), so do not rely on them being present.
 
     ```json
-    { "bin": "45492418", "form_factor": "virtual", "country": null, "currency": "USD", "price": "5.00", "shipping": null, "total": "5.00", "program": "standard" }
+    { "bin": "45492418", "form_factor": "virtual", "country": null, "currency": "USD", "price": "5.00", "shipping": null, "total": "5.00" }
     ```
 
     ```json
-    { "bin": "45492418", "form_factor": "physical", "country": "JP", "currency": "USD", "price": "100.00", "shipping": "12.00", "total": "112.00", "program": "standard" }
+    { "bin": "45492418", "form_factor": "physical", "country": "JP", "currency": "USD", "price": "100.00", "shipping": "12.00", "total": "112.00" }
     ```
 
     > Changed 2026-09-22: `estimated_shipping` (a non-charged indication) was replaced by `shipping` (the fee actually charged). Physical shipping is now billed separately from the issuance fee.
 
-    - 400: unsupported `bin` / `type` combination (`{ "message": "Unsupported card bin/form factor: <bin>/<form factor>", "code": 400 }`), or a `bin` of the `collateral` program (`card_quote is not supported for program collateral`).
+    - 400: unsupported `bin` / `type` combination (`{ "message": "Unsupported card bin/form factor: <bin>/<form factor>", "code": 400 }`).
 
     ### GET /card/catalog
 
     Lists the cards your users can be issued, with the price that applies when no other price is set. Scope: `card:read`.
 
     - query: none (any parameter returns 400)
-    - 200: `{ data: [{ bin, type, name, defaultPrice, program }] }`
+    - 200: `{ data: [{ bin, type, name, defaultPrice }] }`
       - One entry per BIN and `type` (`"virtual"` \| `"physical"`) that is enabled in the **card BIN catalog** and available to your client.
       - `defaultPrice` is the issuance price for a user without a price of their own — for example a user whose **referral code** has no `cardPrices` for that card. It is a **fixed 2-decimal string**, like `price` in `/card/quote`.
-      - `program`: the **card program** of that BIN. The catalog is per client, so it lists `standard` cards. `collateral` cards are enabled per user and are not listed here.
       - Costs are never returned.
 
     ```json
     { "data": [
-      { "bin": "45492418", "type": "virtual", "name": "Pay3 Card", "defaultPrice": "5.00", "program": "standard" }
+      { "bin": "45492418", "type": "virtual", "name": "Pay3 Card", "defaultPrice": "5.00" }
     ] }
     ```
 
@@ -526,15 +458,14 @@ info:
     - headers: `Idempotency-Key: <unique>`
     - body: `{ userId, type, amount?, bin? }`
       - `type`: `"virtual"` \| `"physical"`
-      - `amount`: omit it, or send `0`. **Any other value returns 400** (`amount is not supported on this endpoint; fund the user with POST /pool/transfer`). Fund the user's balance with **`POST /pool/transfer`** before issuing; the issuance price is managed by Pay3.
+      - `amount` (default 0): top-up loaded onto the user balance at issuance. **This is not the issuance price** — pricing is managed by Pay3.
       - `bin` (optional): omitted, the first BIN that supports the form factor is used (`537100` for virtual in sandbox).
-    - 200: `{ data: { id, cardType, status, last4, program }, code: 0 }`
+    - 200: `{ data: { id, cardType, status, last4 }, code: 0 }`
       - `id`: card ID, the same value as `cardId` in the `card.issued` webhook (**Webhooks**).
       - `cardType`: `"virtual"` \| `"physical"`; `status`: `"active"` \| `"issued"` \| `"shipped"` \| `"activated"` \| `"frozen"`.
       - `last4`: last four digits of the card number. **PAN, CVV, expiry, billing address and email are never returned.**
-      - `program`: the **card program** that issued the card (the program of `bin`).
-      - These five fields are the entire response; the card platform's raw payload is not passed through.
-    - 400: `bin` unknown, disabled, or not allowed for that form factor; `amount` other than `0`. **A user balance below the issuance price also returns this 400** — see below.
+      - These four fields are the entire response; the card platform's raw payload is not passed through.
+    - 400: `bin` unknown, disabled, or not allowed for that form factor. **A user balance below the issuance price also returns this 400** — see below.
     - 402: the balance ran out mid-issuance — see below.
     - 403: **two distinct cases; branch on `message`** (both carry `code: 403`).
 
@@ -544,13 +475,7 @@ info:
       | `Card limit reached for your account` / `Card limit reached for this card type` | The **card count limit** has been reached | Review the user's existing cards; contact Pay3 if the limit needs raising |
 
       The default limit is 1 virtual and 1 physical card per user, but it is a configurable safety limit that may differ per client. **Do not hard-code the count — branch on the 403 `message`.** Changing the `bin` does not clear a limit error.
-    - 409: **three distinct cases; branch on `message`** (all carry `code: 409`). No card is created and no `card.issued` webhook is sent in any of them.
-
-      | message | Meaning | What to do |
-      |---|---|---|
-      | `Account setup is not complete yet` | The user's account on the card platform does not exist yet — `kyc/submit` starts that setup asynchronously. Checked **before** the balance, so this comes first even when the balance is also short | Wait for `GET /users/{userId}` → `kycStatus: "approved"` (or the `user.kyc.updated` webhook), then retry. This response does **not** consume the `Idempotency-Key`, so the same key can be reused |
-      | `Card issuance did not complete: no card was created. ...` | Setup looked complete but issuance still produced no card | Confirm setup, then retry with a **new `Idempotency-Key`**. Contact Pay3 if it repeats |
-      | `Idempotency-Key was already used with a different request body` / `A request with this Idempotency-Key is already in progress` | Key reuse (**Idempotency**) | Use a new key for a new request |
+    - 409: issuance finished without producing a card (`{ "message": "Card issuance did not complete: no card was created. ...", "code": 409 }`). Almost always this means the account and card-platform setup has not finished yet: `kyc/submit` starts that setup asynchronously, so calling issuance too early lands in this window. **No card is created and no `card.issued` webhook is sent.** Confirm setup has completed (`GET /users/{userId}` → `kycStatus` / `cards`, or the `user.kyc.updated` webhook) and retry with a **new `Idempotency-Key`**.
 
     #### Insufficient balance: 400 and 402 are two different cases
 
@@ -589,76 +514,43 @@ info:
     Lists a user's cards.
 
     - body: `{ userId }`
-    - 200: `{ data: [{ id, cardType, status, last4, currency, balance, program }], failedPrograms?, code: 0 }`
+    - 200: `{ data: [{ id, cardType, status, last4, currency, balance }], code: 0 }`
       - `balance` is a **fixed 2-decimal string** (`"2.60"`). When it cannot be retrieved it is `null` — never rounded to `"0.00"`, so a zero balance stays distinguishable from a missing one.
       - `currency` is an ISO currency code (for example `"USD"`); `last4` is the last four digits of the card number.
-      - `program`: the **card program** of the card. Later operations on the card go to that program automatically.
-      - When the user has more than one program enabled, the list merges all of them. If one program cannot be read, the cards of the others are still returned and `failedPrograms` lists the one that failed (for example `["collateral"]`). Retry later for the missing cards. `failedPrograms` is absent when nothing failed. If every program fails, the error of the `standard` program is returned as before.
-      - These seven fields are the entire card object. Card-platform internal identifiers, billing address, email, price lists and feature flags are not included.
+      - These six fields are the entire response. Card-platform internal identifiers, billing address, email, price lists and feature flags are not included.
       - Card type, status and last four digits are also available per user from `cards` in `GET /users/{userId}` (**Users**).
-      - **Card details (card number, CVV, expiry) never cross the partner boundary**; there is no endpoint that returns them.
+
+    ### POST /card/fetch_card_details
+
+    - body: `{ userId, cardId }`
+    - **Card number, CVV and expiry never cross the partner boundary.** This surface requires a two-factor step-up credential, which tokens issued through the partner OAuth flow do not carry, so partner integrations receive **`401`** here. On `200`, `data` is empty.
+    - For card type, status and last four digits use `POST /card/fetch_cards` or `GET /users/{userId}`.
 
     ### POST /card/fetch_deposit_address
 
-    Returns the user's crypto deposit address for one token and network. Funds sent to it are credited to the user's balance (less the deposit fee).
+    Returns a crypto deposit address.
 
     - body: `{ userId, token, network }`
-
-      | token | Accepted `network` values |
-      |---|---|
-      | `USDT` | `TRX`, `TON`, `AVAX`, `ETH`, `SOL`, `BNB` |
-      | `USDC` | `OP`, `MATIC` |
-
-      Values are case-sensitive.
-    - 200: `{ message, data: { address, token, network }, code: 0 }` — `token` and `network` echo the request.
-
-    | Status | Body `message` | Meaning |
-    |---|---|---|
-    | 400 | `token must be one of: USDT, USDC` / `network for <token> must be one of: …` | Combination not in the table above. Nothing is created |
-    | 409 | `Account setup is not complete yet` | The user's account does not exist yet. Wait for `kycStatus: "approved"` |
-    | 4xx | (platform message) | Refused by the card platform for this user's state |
+    - Accepted token and network combinations are listed in [openapi.yaml](openapi.yaml).
 
     ### POST /card/set_card_pin
 
-    Sets the ATM PIN of a physical card (and activates the card if it is not active yet).
+    Sets the ATM PIN.
 
-    - body: `{ userId, cardId, pin }` — `pin` is a string of **exactly 6 digits** (`"482915"`).
-    - 200: `{ "message": "Card pin set successfully", "code": 0 }`
-
-    | Status | Body `message` | Meaning |
-    |---|---|---|
-    | 400 | `pin must be exactly 6 digits` / `cardId is required` | Rejected before reaching the card platform |
-    | 400 | `set_card_pin is not supported for program collateral` | The card is a `collateral` card, which has no PIN |
-    | 404 | `Card not found` | `cardId` is not one of this user's cards |
-    | 500 | `Failed to set ATM pin` / `Failed to get card` | The card platform did not confirm the change. Retry |
+    - body: `{ userId, cardId, pin }`
 
     ### POST /card/lock_card and POST /card/unlock_card
 
-    Locks (freezes) or unlocks a card.
+    Locks or unlocks a card.
 
     - body: `{ userId, cardId }`
-    - 200: `{ message, data: { id, status }, code: 0 }`
-      - `status` uses the same vocabulary as `fetch_cards`: after `lock_card` it is `"frozen"`; after `unlock_card` it is `"active"` (virtual) or `"activated"` (physical).
-
-    | Status | Body `message` | Meaning |
-    |---|---|---|
-    | 400 | `cardId is required` | |
-    | 403 | `Card unlock is restricted for this account. …` (unlock only) | Pay3 has restricted unlocking for this user. Contact Pay3 |
-    | 404 | `Card not found` | `cardId` is not one of this user's cards |
-    | 500 | `Card status could not be confirmed. …` | The platform did not return the card. Check with `fetch_cards` before retrying |
 
     ### POST /card/fetch_transactions
 
     Returns the user's card transaction history, newest first.
 
-    - body: `{ userId, page?, limit? }`
-      - `page`: integer `0` or greater, **0-based** (default `0`).
-      - `limit`: integer from `1` to `100` (default `20`).
-      - Integers may be sent as JSON numbers or as digit-only strings. Anything else returns `400`.
-    - 200: `{ message, data: [Transaction], paging: { page, limit, hasMore }, transactions: [Transaction], code: 0 }`
-      - `hasMore: true` means the next `page` may have more rows.
-      - **`transactions` is deprecated**: it carries the same array as `data` and will be removed in a later release. Read `data`.
-      - A user whose account has not been set up yet gets `200` with an empty `data` (there are no transactions), not an error.
+    - body: `{ userId, page, limit }`
+    - 200: `{ message, transactions: [Transaction], code: 0 }`
 
     Transaction:
 
@@ -667,22 +559,18 @@ info:
     | `id` | string | |
     | `kind` | `"deposit"` \| `"spend"` \| `"fee"` \| `"reward"` \| `"issuance"` | |
     | `status` | `"completed"` \| `"pending"` \| `"declined"` | |
-    | `title` | string | Display label: the merchant name for card payments, otherwise a short English label (`Deposit`, `Card issuance fee`, …) |
-    | `amount` | string \| null | **Signed fixed 2-decimal string** from the user's point of view: deposits positive, refunds and reversals positive (money credited back), purchases and fees negative (`"-12.50"`). `null` if it could not be read — never `"0.00"` in that case |
-    | `currency` | string | ISO code, for example `"USD"` |
+    | `title_key` | string | `deposit`, `reward_deposit`, `card_issuance_fee`, `card_shipping_fee`, `card_issuance_points`, `fee` or `merchant` |
+    | `title_fallback` | string | Present for `merchant`, `fee` and `card_issuance_points` rows: the merchant name or a label |
+    | `subtitle` | string | Present when the row has a card: `"** <last 4 digits>"` |
+    | `amount` | number | Signed from the user's point of view: deposits positive, refunds and reversals positive, purchases and fees negative. Includes the fees charged on the transaction |
+    | `currency` | string | For example `"USD"` |
     | `occurredAt` | string | ISO 8601 timestamp |
-    | `merchant` | object \| null | `{ name, city?, country?, mcc? }` for card payments; `null` otherwise |
-    | `cardId` | string \| null | The card the transaction belongs to, if any |
-    | `program` | `"standard"` \| `"collateral"` | The **card program** the transaction comes from. This endpoint reads the `standard` program, so it is `"standard"` today |
-
-    ```json
-    { "id": "tx_01", "kind": "spend", "status": "completed", "title": "AMAZON", "amount": "-12.50", "currency": "USD",
-      "occurredAt": "2026-10-01T09:12:00Z", "merchant": { "name": "AMAZON", "city": "Seattle", "country": "US", "mcc": "5999" }, "cardId": "<card id>", "program": "standard" }
-    ```
-
-    | Status | Body `message` | Meaning |
-    |---|---|---|
-    | 400 | `page must be an integer of 0 or greater` / `limit must be an integer between 1 and 100` | |
+    | `merchant` | object \| null | For card payments: `{ name, city?, country?, mcc?, mccCategory?, state?, zipcode?, mid? }`; `null` otherwise |
+    | `cardId` | string \| null | |
+    | `feeBreakdown` | object | Present when a fee is attached: `{ base, fee }` (numbers; `amount` is their sum with the sign applied) |
+    | `rawType` | string | The card platform's transaction type, for example `Consumption`, `Refund`, `Reversal`, `TransferIn` |
+    | `countedInSpending` | boolean | Whether the row counts as a card purchase or a card fee in the user's spending figures |
+    | `category` / `categorySource` | string | Present on card purchases: the spending category |
 
     ## Partner Pool
 
@@ -727,13 +615,18 @@ info:
 
     ## Unknown paths and error bodies
 
-    Unrecognised paths and unsupported HTTP methods return a **JSON 404** on every subtree (`/pool/*`, `/referral-codes*`, `/users/*`, `/oauth/*`, `/kyc/*`, `/card/*`):
+    Unrecognised paths and unsupported HTTP methods return a **JSON 404**. This holds for `/pool/*`, `/referral-codes*`, `/users/*` and `/oauth/*`.
 
-    ```json
-    { "message": "Unknown endpoint. Check the HTTP method and path against docs/api.", "code": 404 }
-    ```
+    `/kyc/*` and `/card/*` resolve the `userId` in the body before routing on the path, so what an unknown sub-path or unsupported method returns there depends on the body you sent:
 
-    The path and method are checked **before** the body is read, so a misspelled path or a wrong method (for example `GET /card/fetch_cards`) returns this 404 whatever body you sent.
+    | Body sent | Response from `/card/<unknown>` or `/kyc/<unknown>` |
+    |---|---|
+    | Valid JSON with a `userId` attributed to you | `404 {"message":"Unknown endpoint. …","code":404}` |
+    | Valid JSON with an unknown `userId` | `404 {"message":"User not found","code":-1}` (`code` does not match the HTTP status) |
+    | Valid JSON with no `userId` | `400 {"message":"User ID is required","code":400}` |
+    | Not parseable as JSON, or no body | `400 {"message":"Invalid JSON body","code":400}` |
+
+    On these two subtrees a misspelled path is therefore not always reported as a path error, so use the paths exactly as documented.
 
     The unparseable-body outcome is uniform across every subtree: broken JSON, an empty body, or a body that is not a JSON object (`null`, a string, a number, an array) returns **`400 {"message":"Invalid JSON body","code":400}`**. There is no `text/plain` `500` — input errors are never reported as `500` (**Authentication**).
 
@@ -888,8 +781,8 @@ info:
         "kycStatus": "approved",
         "kyc": { "identity": { "status": "approved" }, "cardIssuer": { "status": "approved" } },
         "cards": [
-          { "cardType": "virtual", "status": "active", "program": "standard" },
-          { "cardType": "physical", "status": "shipped", "program": "standard" }
+          { "cardType": "virtual", "status": "active" },
+          { "cardType": "physical", "status": "shipped" }
         ],
         "inviteCode": "K7M2Q9XA",
         "invitedByUserId": null,
@@ -960,7 +853,6 @@ info:
 
     - `frozen` takes precedence over the form-factor state: an activated physical card that is locked also reports `frozen`.
     - Cancelled and deactivated cards are not listed.
-    - Each card carries `program`, the **card program** it belongs to. This list reads the `standard` program only. For the full list across programs, use `POST /card/fetch_cards`.
 
     ## PUT /users/{userId}/invite
 
@@ -1707,19 +1599,10 @@ paths:
                     example: OAuth access token generated successfully
                   accessToken:
                     type: string
-                    example: "<access token (JWT)>"
+                    example: "<access token>"
                   success:
                     type: boolean
                     example: true
-                  expiresIn:
-                    type: integer
-                    description: Lifetime of the token in seconds, counted from issuance (added 2026-10-14).
-                    example: 3600
-                  tokenType:
-                    type: string
-                    enum: [Bearer]
-                    description: The scheme to use in the `Authorization` header (added 2026-10-14).
-                    example: Bearer
         "400":
           description: |
             The request body could not be parsed as JSON
@@ -2163,7 +2046,7 @@ paths:
                     description: Empty array when the user has no card.
                     items:
                       type: object
-                      required: [cardType, status, program]
+                      required: [cardType, status]
                       additionalProperties: false
                       properties:
                         cardType:
@@ -2174,8 +2057,6 @@ paths:
                           type: string
                           enum: [active, issued, shipped, activated, frozen]
                           example: active
-                        program:
-                          $ref: "#/components/schemas/CardProgram"
                   inviteCode:
                     type: string
                     nullable: true
@@ -2461,32 +2342,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: >
-            The applicant could not be resolved when setup started.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                message: "applicant_not_found"
-                code: 404
-        "409":
-          description: >
-            The same `Idempotency-Key` was used with a different request body.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                message: "Idempotency-Key was already used with a different request body"
-                code: 409
 
   /card/application/start:
     post:
       operationId: startCardApplication
       summary: Start card application
-      description: Starts the card application for a given user, or returns the one already in progress.
+      description: Starts the card application process for a given user and applicant.
       tags:
         - Card Service
       security:
@@ -2499,10 +2360,14 @@ paths:
               type: object
               required:
                 - userId
+                - applicantId
               properties:
                 userId:
                   type: string
                   example: ac0d2c0d-610e-45c3-9752-520bd0108e45
+                applicantId:
+                  type: string
+                  example: testapplicationId
       responses:
         "200":
           description: Card application started successfully or already exists
@@ -2588,16 +2453,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: >
-            No card application in progress for this user.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                message: "No ongoing card application present"
-                code: 404
 
   /card/application:
     post:
@@ -2705,16 +2560,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: >
-            No card application in progress for this user.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                message: "No ongoing card application present"
-                code: 404
 
   /card/quote:
     post:
@@ -2805,59 +2650,6 @@ paths:
                           `null` when the shipping fee could not be retrieved.
                         pattern: '^\d+\.\d{2}$'
                         example: "5.00"
-                      program:
-                        $ref: "#/components/schemas/CardProgram"
-                      issuance_fee:
-                        type: string
-                        description: >
-                          Present only for users who can apply Pay3 points (P3P) to the issuance fee
-                          (absent for most partner users). Equal to `price`. Fixed 2 decimals.
-                        pattern: '^\d+\.\d{2}$'
-                      points_applied:
-                        type: integer
-                        description: Points applied to the issuance fee (present with `issuance_fee`). `0` = none.
-                      points_applied_usd:
-                        type: string
-                        description: USD value of `points_applied` (present with `issuance_fee`). Fixed 2 decimals.
-                        pattern: '^\d+\.\d{2}$'
-                      charge:
-                        type: string
-                        nullable: true
-                        description: >
-                          Cash still due = `issuance_fee` − `points_applied_usd` + `shipping` (present with
-                          `issuance_fee`). `null` when `shipping` is unknown.
-                        pattern: '^\d+\.\d{2}$'
-                      required_balance:
-                        type: string
-                        nullable: true
-                        description: >
-                          Balance the user needs before issuing (present with `issuance_fee`). `null` when
-                          `shipping` is unknown.
-                        pattern: '^\d+\.\d{2}$'
-                      address_check:
-                        type: object
-                        description: >
-                          Physical cards only (absent for virtual). Consistency check of the shipping address
-                          already saved on the user's in-progress application (country + postal code + city);
-                          the request body does not change. The quote itself is still returned (HTTP 200)
-                          when the address is rejected — but `issue_card` will then fail with 400
-                          `shipping_address_mismatch` before any funds move, so ask the user to correct the
-                          address first. `unverified` means "not checked / could not be decided" (no data for
-                          the country, postal code not found, check disabled) and is **not** an error —
-                          treat it like `ok`. Branch on `status` / `code`, not on `message`.
-                        required: [status]
-                        properties:
-                          status:
-                            type: string
-                            enum: [ok, blocked, unverified]
-                          code:
-                            type: string
-                            description: Present only when `status` is `blocked`.
-                            enum: [postal_format, postal_city_mismatch, vn_province_mismatch]
-                          message:
-                            type: string
-                            description: English text for the user. Present only when `status` is `blocked`.
-                            example: "Postal code and city do not match"
               example:
                 message: "Quote generated"
                 data:
@@ -2868,12 +2660,9 @@ paths:
                   price: "5.00"
                   shipping: null
                   total: "5.00"
-                  program: standard
                 code: 0
         "400":
-          description: >
-            Unsupported card bin / form factor combination, or a `bin` of the `collateral` program
-            (`card_quote is not supported for program collateral` — that program has no quote).
+          description: Unsupported card bin / form factor combination
           content:
             application/json:
               schema:
@@ -2919,7 +2708,7 @@ paths:
                     type: array
                     items:
                       type: object
-                      required: [bin, type, name, defaultPrice, program]
+                      required: [bin, type, name, defaultPrice]
                       additionalProperties: false
                       properties:
                         bin: { type: string, example: "45492418" }
@@ -2929,8 +2718,6 @@ paths:
                           type: string
                           description: USD, 2-decimal string (same format as `price` in `/card/quote`).
                           example: "5.00"
-                        program:
-                          $ref: "#/components/schemas/CardProgram"
         "400":
           description: "Unknown query parameter (`Accepted: (none)`)"
           content:
@@ -2978,9 +2765,8 @@ paths:
                 amount:
                   type: number
                   description: >
-                    Omit it or send 0. Any other value returns 400 — fund the user's balance with
-                    `POST /pool/transfer` before issuing. The issuance price is managed by Pay3.
-                  enum: [0]
+                    Optional top-up loaded onto the user balance at issuance (default 0).
+                    This is NOT the issuance price — pricing is managed by Pay3.
                   example: 0
                 bin:
                   type: string
@@ -3009,7 +2795,7 @@ paths:
                   data:
                     type: object
                     description: >
-                      Whitelisted card summary. These five fields are the entire response —
+                      Whitelisted card summary. These four fields are the entire response —
                       the card platform's raw payload is never passed through (no PAN, CVV,
                       expiry, billing address, email, or internal identifiers).
                     additionalProperties: false
@@ -3031,8 +2817,6 @@ paths:
                         type: string
                         description: Last four digits of the card number.
                         example: "9924"
-                      program:
-                        $ref: "#/components/schemas/CardProgram"
                 example:
                   message: "Card issued successfully"
                   code: 0
@@ -3041,38 +2825,22 @@ paths:
                     cardType: virtual
                     status: active
                     last4: "9924"
-                    program: standard
 
         "400":
           description: >
-            Invalid request — an unknown / disabled / form-factor-mismatched `bin`, an `amount` other
-            than 0 (`amount is not supported on this endpoint; fund the user with POST /pool/transfer`), **or the user
+            Invalid request — an unknown / disabled / form-factor-mismatched `bin`, **or the user
             balance is below the issuance price (pre-flight rejection)**. In the balance case the
             request is refused *before* issuance starts, so **no card is created**. Top up and
             retry with a new `Idempotency-Key`. Do not hard-code the required amount: branch on
             `status` / `code` (the price and the card platform's internal fees are Pay3-side
             configuration and differ between sandbox and production).
-
-            Physical cards: when the saved shipping address fails the country + postal code + city
-            consistency check, the request is refused **before any funds move** with
-            `message: "Invalid physical card data: <reason text>"` (`Postal code and city do not match` /
-            `Postal code format is not valid for the shipping country`). The machine-readable reason
-            (`shipping_address_mismatch` with `postal_format` | `postal_city_mismatch` |
-            `vn_province_mismatch`) is available ahead of time as `address_check` on `/card/quote` —
-            check it before issuing. Correct the address (`/card/application`) and retry.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-              examples:
-                insufficient_balance:
-                  value:
-                    message: "Not enough balance to issue card"
-                    code: 400
-                shipping_address_mismatch:
-                  value:
-                    message: "Invalid physical card data: Postal code and city do not match"
-                    code: 400
+              example:
+                message: "Not enough balance to issue card"
+                code: 400
         "401":
           description: Unauthorized
           content:
@@ -3122,40 +2890,25 @@ paths:
                     code: 403
         "409":
           description: >
-            No card was created and no `card.issued` webhook is sent. **Distinguish the cases by `message`**:
-
-            1. `Account setup is not complete yet` — the user's account on the card platform does not
-               exist yet (`kyc/submit` only **starts** that setup). Checked before the balance, so it is
-               returned even when the balance is also short. Does **not** consume the `Idempotency-Key`.
-               Wait for `GET /users/{userId}` → `kycStatus: "approved"` (or `user.kyc.updated`) and retry.
-            2. `Card issuance did not complete: no card was created. …` — setup looked complete but no card
-               was produced. Retry with a new `Idempotency-Key`; contact Pay3 if it repeats.
-            3. `Idempotency-Key was already used with a different request body` /
-               `A request with this Idempotency-Key is already in progress` — key reuse.
+            Issuance finished without producing a card. In almost all cases the account/card-platform
+            setup has not finished yet — `kyc/submit` only **starts** that setup asynchronously, so
+            calling issuance before it completes lands in this window. **No card is created and no
+            `card.issued` webhook is sent.** Confirm setup has completed (`GET /users/{userId}` →
+            `kycStatus` / `cards`, or the `user.kyc.updated` webhook) and retry with a new
+            `Idempotency-Key`. Contact Pay3 if it keeps returning 409.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-              examples:
-                accountNotReady:
-                  summary: Account setup not finished
-                  value:
-                    message: "Account setup is not complete yet"
-                    code: 409
-                noCard:
-                  summary: Issuance produced no card
-                  value:
-                    message: "Card issuance did not complete: no card was created. The account is not ready to be issued a card yet — retry with a new Idempotency-Key once the account setup has finished."
-                    code: 409
+              example:
+                message: "Card issuance did not complete: no card was created. The account is not ready to be issued a card yet — retry with a new Idempotency-Key once the account setup has finished."
+                code: 409
 
   /card/fetch_cards:
     post:
       operationId: fetchCards
       summary: Fetch all cards for a user
-      description: >
-        Returns the user's cards. When the user has more than one card program enabled, the list
-        merges all of them (`standard` first), and every card carries its `program`. Later card
-        operations go to that program automatically. See "Card programs" in the endpoint guide.
+      description: Returns a list of virtual cards associated with the given user.
       tags:
         - Card Service
       requestBody:
@@ -3186,7 +2939,7 @@ paths:
                   data:
                     type: array
                     description: >
-                      Whitelisted card summaries. These seven fields are the entire card object —
+                      Whitelisted card summaries. These six fields are the entire response —
                       the card platform's raw payload, internal identifiers (account/budget/
                       cardholder/balance ids), billing address, email, and pricing/feature
                       flags are never passed through.
@@ -3222,15 +2975,6 @@ paths:
                             other money field). `null` when unavailable — it is never rounded
                             to "0.00", so a zero balance stays distinguishable from a missing one.
                           example: "2.60"
-                        program:
-                          $ref: "#/components/schemas/CardProgram"
-                  failedPrograms:
-                    type: array
-                    description: >
-                      Present only when one of the user's card programs could not be read. The cards of
-                      the other programs are still returned in `data`; retry later for the missing ones.
-                    items:
-                      $ref: "#/components/schemas/CardProgram"
                 example:
                   message: "Cards fetched successfully"
                   code: 0
@@ -3241,7 +2985,71 @@ paths:
                       last4: "9924"
                       currency: "USD"
                       balance: "2.60"
-                      program: standard
+
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /card/fetch_card_details:
+    post:
+      operationId: fetchCardDetails
+      summary: Fetch card details
+      description: >-
+        Card number, CVV and expiry are never returned across the partner boundary.
+        This endpoint requires a two-factor step-up credential (PCI); tokens issued through the
+        partner OAuth flow do not carry one, so partner integrations receive `401` here.
+        For card type, status and the last four digits use `POST /card/fetch_cards`
+        or `GET /users/{userId}`.
+      tags:
+        - Card Service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - userId
+                - cardId
+              properties:
+                userId:
+                  type: string
+                  format: uuid
+                  example: "04610acd-01da-4d4d-982f-d12de7dac529"
+                cardId:
+                  type: string
+                  format: uuid
+                  example: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
+      responses:
+        "200":
+          description: Card details fetched successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Card details fetched successfully"
+                  code:
+                    type: integer
+                    example: 0
+                  data:
+                    type: object
+                    description: >-
+                      Always empty. No card detail field is promised on the partner boundary.
+                    additionalProperties: false
+                    example: {}
 
         "400":
           description: Invalid request
@@ -3307,23 +3115,13 @@ paths:
                     example: 0
                   data:
                     type: object
-                    additionalProperties: false
-                    required: [address, token, network]
                     properties:
                       address:
                         type: string
                         example: "TUp8HBKRboDH3SZFFFs2qA6iNDCGnzz3bH"
-                      token:
-                        type: string
-                        example: "USDT"
-                      network:
-                        type: string
-                        example: "TRX"
 
         "400":
-          description: >
-            `token` / `network` not in the accepted combinations
-            (`token must be one of: USDT, USDC` / `network for <token> must be one of: …`).
+          description: Invalid parameters or unsupported token-network combination
           content:
             application/json:
               schema:
@@ -3335,17 +3133,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-
-        "409":
-          description: >
-            The user's account has not been set up yet. Wait for `kycStatus: "approved"`.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                message: "Account setup is not complete yet"
-                code: 409
 
   /card/set_card_pin:
     post:
@@ -3371,9 +3158,10 @@ paths:
                   description: The user who owns the card.
                 pin:
                   type: string
-                  description: ATM PIN, exactly 6 digits.
-                  example: "482915"
-                  pattern: "^[0-9]{6}$"
+                  description: 6-digit ATM PIN
+                  example: "123456"
+                  minLength: 6
+                  maxLength: 6
                 cardId:
                   type: string
                   format: uuid
@@ -3394,7 +3182,7 @@ paths:
                     example: 0
 
         "400":
-          description: "`pin` is not exactly 6 digits (`pin must be exactly 6 digits`), or `cardId` is missing."
+          description: Invalid parameters or unsupported token-network combination
           content:
             application/json:
               schema:
@@ -3414,19 +3202,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example:
-                message: Failed to set ATM pin
+                message: Failed to set card pin
                 code: 500
-
-        "404":
-          description: >
-            `cardId` is not one of this user's cards.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                message: "Card not found"
-                code: 404
 
   /card/lock_card:
     post:
@@ -3469,22 +3246,9 @@ paths:
                   code:
                     type: integer
                     example: 0
-                  data:
-                    type: object
-                    additionalProperties: false
-                    required: [id, status]
-                    properties:
-                      id:
-                        type: string
-                        example: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
-                      status:
-                        type: string
-                        enum: [active, issued, shipped, activated, frozen]
-                        description: Same vocabulary as `fetch_cards`.
-                        example: frozen
 
         "400":
-          description: "`cardId` is missing (`cardId is required`)."
+          description: Invalid parameters or unsupported token-network combination
           content:
             application/json:
               schema:
@@ -3506,17 +3270,6 @@ paths:
               example:
                 message: Failed to lock card
                 code: 500
-
-        "404":
-          description: >
-            `cardId` is not one of this user's cards.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                message: "Card not found"
-                code: 404
 
   /card/unlock_card:
     post:
@@ -3559,22 +3312,9 @@ paths:
                   code:
                     type: integer
                     example: 0
-                  data:
-                    type: object
-                    additionalProperties: false
-                    required: [id, status]
-                    properties:
-                      id:
-                        type: string
-                        example: "cee34fdd-51cc-49bd-b71a-d6bc0653bb34"
-                      status:
-                        type: string
-                        enum: [active, issued, shipped, activated, frozen]
-                        description: Same vocabulary as `fetch_cards`.
-                        example: active
 
         "400":
-          description: "`cardId` is missing (`cardId is required`)."
+          description: Invalid parameters or unsupported operation
           content:
             application/json:
               schema:
@@ -3597,107 +3337,149 @@ paths:
                 message: Failed to unlock card
                 code: 500
 
-        "404":
-          description: >
-            `cardId` is not one of this user's cards.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                message: "Card not found"
-                code: 404
-        "403":
-          description: >
-            Pay3 has restricted unlocking for this user.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                message: "Card unlock is restricted for this account. Please contact support."
-                code: 403
-
   /card/fetch_transactions:
-    post:
-      tags:
-        - Card Service
-      summary: Fetch card transactions
-      description: >
-        Returns the user's card transactions, newest first. A user whose account has not been
-        set up yet gets 200 with an empty `data`.
-      operationId: fetchTransactions
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - userId
-              properties:
-                userId:
-                  type: string
-                  format: uuid
-                  description: The user who owns the cards.
-                page:
-                  type: integer
-                  minimum: 0
-                  default: 0
-                  example: 0
-                  description: 0-based page number. A digit-only string is also accepted.
-                limit:
-                  type: integer
-                  minimum: 1
-                  maximum: 100
-                  default: 20
-                  example: 20
-                  description: Rows per page. A digit-only string is also accepted.
-      responses:
-        "200":
-          description: Transactions fetched successfully
+      post:
+        tags:
+          - Card Service
+        summary: Fetch card transactions
+        description: Fetches paginated card transactions for a user.
+        operationId: fetchTransactions
+
+        requestBody:
+          required: true
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - userId
+                  - page
+                  - limit
                 properties:
-                  message:
+                  userId:
                     type: string
-                    example: "Transactions fetched successfully"
-                  data:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/CardTransaction"
-                  paging:
-                    type: object
-                    required: [page, limit, hasMore]
-                    properties:
-                      page: { type: integer, example: 0 }
-                      limit: { type: integer, example: 20 }
-                      hasMore:
-                        type: boolean
-                        description: The next page may have more rows.
-                  transactions:
-                    type: array
-                    deprecated: true
-                    description: Same array as `data`. Kept for one release; read `data`.
-                    items:
-                      $ref: "#/components/schemas/CardTransaction"
-                  code:
+                    format: uuid
+                    description: The user who owns the card.
+                  page:
                     type: integer
-                    example: 0
-        "400":
-          description: >
-            `page` / `limit` out of range or not an integer
-            (`page must be an integer of 0 or greater` / `limit must be an integer between 1 and 100`).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
+                    minimum: 1
+                    example: 1
+                    description: Page number for pagination
+                  limit:
+                    type: integer
+                    minimum: 1
+                    maximum: 100
+                    example: 10
+                    description: Number of transactions per page
+
+        responses:
+          "200":
+            description: Transactions fetched successfully
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    message:
+                      type: string
+                      example: "Transactions fetched successfully"
+                    transactions:
+                      type: array
+                      description: Newest first.
+                      items:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          kind:
+                            type: string
+                            enum: [deposit, spend, fee, reward, issuance]
+                          status:
+                            type: string
+                            enum: [completed, pending, declined]
+                          title_key:
+                            type: string
+                            description: "`deposit`, `reward_deposit`, `card_issuance_fee`, `card_shipping_fee`, `card_issuance_points`, `fee` or `merchant`."
+                          title_fallback:
+                            type: string
+                            description: Present for `merchant`, `fee` and `card_issuance_points` rows (the merchant name or a label).
+                          subtitle:
+                            type: string
+                            description: 'Present when the row has a card: "** <last 4 digits>".'
+                          amount:
+                            type: number
+                            description: >
+                              Signed from the user's point of view: deposits positive, refunds and reversals positive,
+                              purchases and fees negative. Includes the fees charged on the transaction.
+                            example: -12.5
+                          currency:
+                            type: string
+                            example: "USD"
+                          occurredAt:
+                            type: string
+                            format: date-time
+                          merchant:
+                            type: object
+                            nullable: true
+                            description: For card payments; `null` otherwise.
+                            properties:
+                              name: { type: string }
+                              city: { type: string }
+                              country: { type: string }
+                              mcc: { type: string }
+                              mccCategory: { type: string }
+                              state: { type: string }
+                              zipcode: { type: string }
+                              mid: { type: string }
+                          cardId:
+                            type: string
+                            nullable: true
+                          feeBreakdown:
+                            type: object
+                            description: Present when a fee is attached. `amount` is `base` + `fee` with the sign applied.
+                            properties:
+                              base: { type: number }
+                              fee: { type: number }
+                          rawType:
+                            type: string
+                            description: The card platform's transaction type, for example `Consumption`, `Refund`, `Reversal`, `TransferIn`.
+                          countedInSpending:
+                            type: boolean
+                            description: Whether the row counts as a card purchase or a card fee in the user's spending figures.
+                          category:
+                            type: string
+                            description: Present on card purchases. The spending category.
+                          categorySource:
+                            type: string
+                            description: Present on card purchases. How the category was set.
+                    code:
+                      type: integer
+                      example: 0
+
+          "400":
+            description: Invalid pagination parameters
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/ErrorResponse"
+
+          "401":
+            description: Unauthorized
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/ErrorResponse"
+
+          "500":
+            description: External API or internal server error
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/ErrorResponse"
+                example:
+                  message: Failed to fetch transactions
+                  code: 500
+
 
   /card/issuance_events:
     post:
@@ -4455,6 +4237,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+
 components:
   securitySchemes:
     bearerAuth:
@@ -4676,54 +4459,6 @@ components:
           type: integer
           nullable: true
           description: Total rows matching the filters, before `limit` is applied.
-    CardTransaction:
-      type: object
-      additionalProperties: false
-      required: [id, kind, status, title, amount, currency, occurredAt, merchant, cardId, program]
-      properties:
-        id: { type: string, example: "tx_01" }
-        kind:
-          type: string
-          enum: [deposit, spend, fee, reward, issuance]
-        status:
-          type: string
-          enum: [completed, pending, declined]
-        title:
-          type: string
-          description: Merchant name for card payments, otherwise a short English label (`Deposit`, `Card issuance fee`, …).
-          example: "AMAZON"
-        amount:
-          type: string
-          nullable: true
-          description: >
-            Signed fixed 2-decimal string from the user's point of view (deposits positive,
-            refunds and reversals positive (money credited back), purchases and fees negative).
-            `null` when it could not be read — never `"0.00"` in that case.
-          example: "-12.50"
-        currency: { type: string, example: "USD" }
-        occurredAt: { type: string, format: date-time }
-        merchant:
-          type: object
-          nullable: true
-          additionalProperties: false
-          required: [name]
-          properties:
-            name: { type: string, example: "AMAZON" }
-            city: { type: string, example: "Seattle" }
-            country: { type: string, example: "US" }
-            mcc: { type: string, example: "5999" }
-        cardId: { type: string, nullable: true }
-        program:
-          $ref: "#/components/schemas/CardProgram"
-    CardProgram:
-      type: string
-      enum: [standard, collateral]
-      description: >
-        The card program. `standard` = a prepaid balance card (the user's balance is funded first and
-        spending draws it down). `collateral` = a card backed by a crypto collateral contract (spending
-        power = collateral minus what is in use; enabled per user, sandbox only for now). Pay3 routes
-        each card operation to the right program; operations a program does not support return 400.
-      example: standard
     ErrorResponse:
       type: object
       properties:

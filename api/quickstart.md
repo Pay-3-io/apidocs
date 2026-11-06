@@ -20,10 +20,10 @@ Pay3 creates your client and invites you to the partner console. In the console'
 curl -X POST "$BASE_URL/oauth/access-token" \
   -H "Content-Type: application/json" \
   -d '{ "clientId": "client_<32 hex>", "clientSecret": "pay3_sk_test_..." }'
-# => { "success": true, "message": "...", "accessToken": "<token>", "expiresIn": 3600, "tokenType": "Bearer" }
+# => { "success": true, "message": "...", "accessToken": "<token>" }
 ```
 
-Send the token as `Authorization: Bearer <accessToken>` on every subsequent call. Tokens expire after `expiresIn` seconds (one hour by default). Only the `Bearer` scheme is accepted; other schemes, or a bare token with no scheme word, return `401`. See [Authentication](authentication.md).
+Send the token as `Authorization: Bearer <accessToken>` on every subsequent call. Tokens expire after one hour by default. Only the `Bearer` scheme is accepted; other schemes, or a bare token with no scheme word, return `401`. See [Authentication](authentication.md).
 
 ## 2. Register a user
 
@@ -111,7 +111,7 @@ Do not issue a card or fund the user until setup has finished. Either:
 - poll `GET /users/{userId}` until `kycStatus` is `"approved"` (see [Users](users.md); `kyc.cardIssuer.status` must be `approved` as well), or
 - consume the `user.kyc.updated` webhook ([Webhooks](webhooks.md)) and act on the event whose `kycStatus` is `"approved"`.
 
-Before that point, `card/issue_card` and `card/fetch_deposit_address` return `409 Account setup is not complete yet`, and `card/fetch_transactions` returns an empty list.
+Before that point, `card/issue_card` returns `409` and no card is created.
 
 ### 3.5 Fund the user, then issue
 
@@ -126,23 +126,22 @@ curl -X POST "$BASE_URL/card/issue_card" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -H "Idempotency-Key: <unique-key>" \
   -d '{ "userId": "<uuid>", "type": "virtual" }'
-# => { "data": { "id": "<card id>", "cardType": "virtual", "status": "active", "last4": "1234", "program": "standard" }, "code": 0 }
+# => { "data": { "id": "<card id>", "cardType": "virtual", "status": "active", "last4": "1234" }, "code": 0 }
 ```
 
 | Field | Required | Notes |
 |---|---|---|
 | `userId` | yes | The registered user. |
 | `type` | yes | `virtual` or `physical`. |
-| `amount` | no | Must be omitted or `0`. Any other value returns `400` — fund the user with [`POST /pool/transfer`](pool.md) instead. |
+| `amount` | no | Top-up loaded onto the user balance at issuance. Defaults to `0`. Not the issuance price. |
 | `bin` | no | BIN to issue. Defaults to the first BIN that supports the requested form factor (`537100` for virtual in sandbox). See [Endpoints](endpoints.md). |
 
 Points to observe:
 
 - The issuance price is managed by Pay3 and cannot be set through the API.
 - Issuance requires enough user balance to cover the price. Clients that use the optional [partner pool](pool.md) top up user balances with `POST /pool/transfer`. Insufficient balance produces two distinct outcomes: `400` (refused before any card existed) and `402` (the balance ran out mid-issuance; Pay3 closes the card it had just created). Branch on `status` / `code` rather than hard-coding an amount. See [Endpoints](endpoints.md).
-- `kyc/submit` only *starts* account and card setup, asynchronously. Issuing before setup completes returns `409 Account setup is not complete yet` and no card is created. Wait for the `user.kyc.updated` webhook or check `kycStatus` via `GET /users/{userId}`, then retry (this `409` does not consume the `Idempotency-Key`).
+- `kyc/submit` only *starts* account and card setup, asynchronously. Issuing before setup completes returns `409` and no card is created. Wait for the `user.kyc.updated` webhook or check `kycStatus` via `GET /users/{userId}`, then retry with a new `Idempotency-Key`.
 - Always send an [`Idempotency-Key`](idempotency.md) on operations that move money (card issuance, KYC submit).
-- Cards belong to a [card program](endpoints.md#card-programs) (`program`: `standard` or `collateral`). Pay3 sends each card operation to the right program the same way the Pay3 app does, so you never pass it.
 
 Issuing with an explicit BIN:
 
@@ -151,7 +150,7 @@ curl -X POST "$BASE_URL/card/issue_card" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -H "Idempotency-Key: <unique-key>" \
   -d '{ "userId": "<uuid>", "type": "virtual", "bin": "45492418" }'
-# => { "data": { "id": "...", "cardType": "virtual", "status": "active", "last4": "....", "program": "standard" }, "code": 0 }
+# => { "data": { "id": "...", "cardType": "virtual", "status": "active", "last4": "...." }, "code": 0 }
 ```
 
 ## 5. Quote a price
