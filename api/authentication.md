@@ -17,8 +17,13 @@ Clients are created by Pay3. Your credentials (API keys), your webhook endpoint,
 curl -X POST "$BASE_URL/oauth/access-token" \
   -H "Content-Type: application/json" \
   -d '{ "clientId": "client_<32 hex>", "clientSecret": "pay3_sk_test_..." }'
-# => { "success": true, "accessToken": "<token>" }
+# => { "success": true, "message": "Oauth access token generated successfully",
+#      "accessToken": "<token>", "expiresIn": 3600, "tokenType": "Bearer" }
 ```
+
+- `expiresIn`: lifetime of this token in **seconds**, counted from issuance. Refresh before it runs out.
+- `tokenType`: always `"Bearer"` — the scheme to put in front of the token in `Authorization`.
+- `expiresIn` and `tokenType` were added on 2026-10-14; `success`, `message` and `accessToken` are unchanged.
 
 This endpoint accepts `POST` only. Other methods return `404 { "message": "Unknown endpoint. Check the HTTP method and path against docs/api.", "code": 404 }`. The method check runs before authentication, so a wrong method never looks like a credentials problem.
 
@@ -27,7 +32,7 @@ This endpoint accepts `POST` only. Other methods return `404 { "message": "Unkno
 - Send the token as `Authorization: Bearer <accessToken>`.
 - Only the `Bearer` scheme is accepted. The scheme word is case-insensitive, so `bearer` also works. Any other scheme word, or a bare token with no scheme word, returns `401 { "message": "Unauthorized", "code": 401 }`.
 - The header value must be exactly two words separated by a single space. A double space, a tab, or extra words after the token return `401` even when the token itself is valid, so build the value as `"Bearer " + accessToken.trim()`. Trailing whitespace is stripped by HTTP itself and does not cause a `401`.
-- Tokens expire after one hour by default. Request a new one after expiry.
+- Tokens expire after `expiresIn` seconds (one hour by default). Request a new one before or after expiry; an expired token returns `401 { "message": "Token expired", "code": 401 }`.
 - The token carries only a client identifier, an issue time, and an expiry. Its format is an implementation detail and can change without notice, so do not decode it or depend on its contents.
 
 ## Errors
