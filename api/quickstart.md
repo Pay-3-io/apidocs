@@ -20,7 +20,7 @@ Pay3 creates your client and invites you to the partner console. In the console'
 curl -X POST "$BASE_URL/oauth/access-token" \
   -H "Content-Type: application/json" \
   -d '{ "clientId": "client_<32 hex>", "clientSecret": "pay3_sk_test_..." }'
-# => { "success": true, "accessToken": "<token>" }
+# => { "success": true, "message": "...", "accessToken": "<token>" }
 ```
 
 Send the token as `Authorization: Bearer <accessToken>` on every subsequent call. Tokens expire after one hour by default. Only the `Bearer` scheme is accepted; other schemes, or a bare token with no scheme word, return `401`. See [Authentication](authentication.md).
@@ -39,22 +39,85 @@ curl -X POST "$BASE_URL/users/register" \
 
 Users you register belong to your client. Other clients cannot see them.
 
+**Proving that the end user owns the email address or phone number is your responsibility.** Pay3 does not send a verification code for users registered through this API; with `PHONE` in particular, the number you pass is stored as given. Verify it in your own sign-up flow before calling `users/register`.
+
 ## 3. Run KYC
 
-Identity verification is a prerequisite for card issuance.
+Identity verification is a prerequisite for card issuance. It runs in **your** UI using the Sumsub WebSDK; Pay3 gives you the token and starts account setup once the check is done.
+
+### 3.1 Get a Sumsub access token (server side)
 
 ```bash
-# Get a Sumsub access token and complete verification in your own UI
 curl -X POST "$BASE_URL/kyc/access-token" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{ "userId": "<uuid>" }'
+# => { "message": "...", "data": { "accessToken": "<sumsub token>", "userId": "<uuid>" }, "code": 0 }
+```
 
-# After verification, submit the KYC result to start account and card setup
+The Sumsub token is short-lived. Expose a small endpoint on your server that calls this again, so the WebSDK can refresh it.
+
+### 3.2 Embed the WebSDK (browser)
+
+```html
+<div id="sumsub-websdk-container"></div>
+<script src="https://static.sumsub.com/idensic/static/sns-websdk-builder.js"></script>
+<script>
+  // Your server calls POST /kyc/access-token and returns data.accessToken.
+  const getToken = () => fetch("/api/kyc-token", { method: "POST" }).then((r) => r.json()).then((j) => j.accessToken);
+
+  let applicantId = null;
+
+  getToken().then((token) => {
+    snsWebSdk
+      .init(token, getToken) // second argument: called by the SDK when the token expires
+      .withConf({ lang: "en" })
+      .on("idCheck.onApplicantLoaded", (payload) => {
+        applicantId = payload.applicantId; // keep it: kyc/submit needs it
+      })
+      .on("idCheck.onApplicantStatusChanged", (payload) => {
+        const done = payload.reviewStatus === "completed" &&
+          payload.reviewResult && payload.reviewResult.reviewAnswer === "GREEN";
+        if (done && applicantId) {
+          // Your server calls POST /kyc/submit (3.3). Do it once.
+          fetch("/api/kyc-submit", { method: "POST", body: JSON.stringify({ applicantId }) });
+        }
+      })
+      .build()
+      .launch("#sumsub-websdk-container");
+  });
+</script>
+```
+
+- `idCheck.onApplicantLoaded` gives you the `applicantId`. It belongs to the user you requested the token for; `kyc/submit` rejects an `applicantId` that does not (`400 Applicant ID does not belong to this user`).
+- Submit only when `reviewStatus` is `completed` **and** `reviewAnswer` is `GREEN`. `RED` means the check failed; let the user retry in the SDK.
+- In sandbox, Sumsub's test documents pass the check.
+
+### 3.3 Submit the result (server side)
+
+```bash
 curl -X POST "$BASE_URL/kyc/submit" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -H "Idempotency-Key: <unique-key>" \
   -d '{ "userId": "<uuid>", "applicantId": "<sumsub-applicant-id>" }'
+# => { "message": "KYC submitted successfully", "data": { "applicantId": "..." }, "code": 0 }
 ```
+
+This only **starts** account and card-platform setup, asynchronously. Re-sending the same `Idempotency-Key` with the same body replays the first response; the same key with a different body returns `409`.
+
+### 3.4 Wait for setup to finish
+
+Do not issue a card or fund the user until setup has finished. Either:
+
+- poll `GET /users/{userId}` until `kycStatus` is `"approved"` (see [Users](users.md); `kyc.cardIssuer.status` must be `approved` as well), or
+- consume the `user.kyc.updated` webhook ([Webhooks](webhooks.md)) and act on the event whose `kycStatus` is `"approved"`.
+
+Before that point, `card/issue_card` returns `409` and no card is created.
+
+### 3.5 Fund the user, then issue
+
+1. `POST /card/quote` with the card you intend to issue — note `data.total`.
+2. `POST /pool/transfer` for at least `total` ([Partner Pool](pool.md)), and wait until `GET /pool/transfer/{transferId}` reports `settled`.
+3. `POST /card/issue_card` (next section).
 
 ## 4. Issue a card
 
@@ -63,7 +126,7 @@ curl -X POST "$BASE_URL/card/issue_card" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -H "Idempotency-Key: <unique-key>" \
   -d '{ "userId": "<uuid>", "type": "virtual" }'
-# => { "data": { ...card }, "code": 0 }
+# => { "data": { "id": "<card id>", "cardType": "virtual", "status": "active", "last4": "1234" }, "code": 0 }
 ```
 
 | Field | Required | Notes |
@@ -87,7 +150,7 @@ curl -X POST "$BASE_URL/card/issue_card" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -H "Idempotency-Key: <unique-key>" \
   -d '{ "userId": "<uuid>", "type": "virtual", "bin": "45492418" }'
-# => { "data": { ..., "bin": "45492418" }, "code": 0 }
+# => { "data": { "id": "...", "cardType": "virtual", "status": "active", "last4": "...." }, "code": 0 }
 ```
 
 ## 5. Quote a price

@@ -29,7 +29,7 @@ info:
     curl -X POST "$BASE_URL/oauth/access-token" \
       -H "Content-Type: application/json" \
       -d '{ "clientId": "client_<32 hex>", "clientSecret": "pay3_sk_test_..." }'
-    # => { "success": true, "accessToken": "<token>" }
+    # => { "success": true, "message": "...", "accessToken": "<token>" }
     ```
 
     Send the token as `Authorization: Bearer <accessToken>` on every subsequent call. Tokens expire after one hour by default. Only the `Bearer` scheme is accepted; other schemes, or a bare token with no scheme word, return `401`. See **Authentication**.
@@ -48,22 +48,85 @@ info:
 
     Users you register belong to your client. Other clients cannot see them.
 
+    **Proving that the end user owns the email address or phone number is your responsibility.** Pay3 does not send a verification code for users registered through this API; with `PHONE` in particular, the number you pass is stored as given. Verify it in your own sign-up flow before calling `users/register`.
+
     ## 3. Run KYC
 
-    Identity verification is a prerequisite for card issuance.
+    Identity verification is a prerequisite for card issuance. It runs in **your** UI using the Sumsub WebSDK; Pay3 gives you the token and starts account setup once the check is done.
+
+    ### 3.1 Get a Sumsub access token (server side)
 
     ```bash
-    # Get a Sumsub access token and complete verification in your own UI
     curl -X POST "$BASE_URL/kyc/access-token" \
       -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
       -d '{ "userId": "<uuid>" }'
+    # => { "message": "...", "data": { "accessToken": "<sumsub token>", "userId": "<uuid>" }, "code": 0 }
+    ```
 
-    # After verification, submit the KYC result to start account and card setup
+    The Sumsub token is short-lived. Expose a small endpoint on your server that calls this again, so the WebSDK can refresh it.
+
+    ### 3.2 Embed the WebSDK (browser)
+
+    ```html
+    <div id="sumsub-websdk-container"></div>
+    <script src="https://static.sumsub.com/idensic/static/sns-websdk-builder.js"></script>
+    <script>
+      // Your server calls POST /kyc/access-token and returns data.accessToken.
+      const getToken = () => fetch("/api/kyc-token", { method: "POST" }).then((r) => r.json()).then((j) => j.accessToken);
+
+      let applicantId = null;
+
+      getToken().then((token) => {
+        snsWebSdk
+          .init(token, getToken) // second argument: called by the SDK when the token expires
+          .withConf({ lang: "en" })
+          .on("idCheck.onApplicantLoaded", (payload) => {
+            applicantId = payload.applicantId; // keep it: kyc/submit needs it
+          })
+          .on("idCheck.onApplicantStatusChanged", (payload) => {
+            const done = payload.reviewStatus === "completed" &&
+              payload.reviewResult && payload.reviewResult.reviewAnswer === "GREEN";
+            if (done && applicantId) {
+              // Your server calls POST /kyc/submit (3.3). Do it once.
+              fetch("/api/kyc-submit", { method: "POST", body: JSON.stringify({ applicantId }) });
+            }
+          })
+          .build()
+          .launch("#sumsub-websdk-container");
+      });
+    </script>
+    ```
+
+    - `idCheck.onApplicantLoaded` gives you the `applicantId`. It belongs to the user you requested the token for; `kyc/submit` rejects an `applicantId` that does not (`400 Applicant ID does not belong to this user`).
+    - Submit only when `reviewStatus` is `completed` **and** `reviewAnswer` is `GREEN`. `RED` means the check failed; let the user retry in the SDK.
+    - In sandbox, Sumsub's test documents pass the check.
+
+    ### 3.3 Submit the result (server side)
+
+    ```bash
     curl -X POST "$BASE_URL/kyc/submit" \
       -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
       -H "Idempotency-Key: <unique-key>" \
       -d '{ "userId": "<uuid>", "applicantId": "<sumsub-applicant-id>" }'
+    # => { "message": "KYC submitted successfully", "data": { "applicantId": "..." }, "code": 0 }
     ```
+
+    This only **starts** account and card-platform setup, asynchronously. Re-sending the same `Idempotency-Key` with the same body replays the first response; the same key with a different body returns `409`.
+
+    ### 3.4 Wait for setup to finish
+
+    Do not issue a card or fund the user until setup has finished. Either:
+
+    - poll `GET /users/{userId}` until `kycStatus` is `"approved"` (see **Users**; `kyc.cardIssuer.status` must be `approved` as well), or
+    - consume the `user.kyc.updated` webhook (**Webhooks**) and act on the event whose `kycStatus` is `"approved"`.
+
+    Before that point, `card/issue_card` returns `409` and no card is created.
+
+    ### 3.5 Fund the user, then issue
+
+    1. `POST /card/quote` with the card you intend to issue — note `data.total`.
+    2. `POST /pool/transfer` for at least `total` (**Partner Pool**), and wait until `GET /pool/transfer/{transferId}` reports `settled`.
+    3. `POST /card/issue_card` (next section).
 
     ## 4. Issue a card
 
@@ -72,7 +135,7 @@ info:
       -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
       -H "Idempotency-Key: <unique-key>" \
       -d '{ "userId": "<uuid>", "type": "virtual" }'
-    # => { "data": { ...card }, "code": 0 }
+    # => { "data": { "id": "<card id>", "cardType": "virtual", "status": "active", "last4": "1234" }, "code": 0 }
     ```
 
     | Field | Required | Notes |
@@ -96,7 +159,7 @@ info:
       -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
       -H "Idempotency-Key: <unique-key>" \
       -d '{ "userId": "<uuid>", "type": "virtual", "bin": "45492418" }'
-    # => { "data": { ..., "bin": "45492418" }, "code": 0 }
+    # => { "data": { "id": "...", "cardType": "virtual", "status": "active", "last4": "...." }, "code": 0 }
     ```
 
     ## 5. Quote a price
@@ -171,7 +234,7 @@ info:
     curl -X POST "$BASE_URL/oauth/access-token" \
       -H "Content-Type: application/json" \
       -d '{ "clientId": "client_<32 hex>", "clientSecret": "pay3_sk_test_..." }'
-    # => { "success": true, "accessToken": "<token>" }
+    # => { "success": true, "message": "Oauth access token generated successfully", "accessToken": "<token>" }
     ```
 
     This endpoint accepts `POST` only. Other methods return `404 { "message": "Unknown endpoint. Check the HTTP method and path against docs/api.", "code": 404 }`. The method check runs before authentication, so a wrong method never looks like a credentials problem.
@@ -181,7 +244,7 @@ info:
     - Send the token as `Authorization: Bearer <accessToken>`.
     - Only the `Bearer` scheme is accepted. The scheme word is case-insensitive, so `bearer` also works. Any other scheme word, or a bare token with no scheme word, returns `401 { "message": "Unauthorized", "code": 401 }`.
     - The header value must be exactly two words separated by a single space. A double space, a tab, or extra words after the token return `401` even when the token itself is valid, so build the value as `"Bearer " + accessToken.trim()`. Trailing whitespace is stripped by HTTP itself and does not cause a `401`.
-    - Tokens expire after one hour by default. Request a new one after expiry.
+    - Tokens expire after one hour by default. Request a new one after expiry; an expired token returns `401 { "message": "Token expired", "code": 401 }`.
     - The token carries only a client identifier, an issue time, and an expiry. Its format is an implementation detail and can change without notice, so do not decode it or depend on its contents.
 
     ## Errors
@@ -484,9 +547,30 @@ info:
 
     ### POST /card/fetch_transactions
 
-    Returns transaction history.
+    Returns the user's card transaction history, newest first.
 
     - body: `{ userId, page, limit }`
+    - 200: `{ message, transactions: [Transaction], code: 0 }`
+
+    Transaction:
+
+    | Field | Type | Notes |
+    |---|---|---|
+    | `id` | string | |
+    | `kind` | `"deposit"` \| `"spend"` \| `"fee"` \| `"reward"` \| `"issuance"` | |
+    | `status` | `"completed"` \| `"pending"` \| `"declined"` | |
+    | `title_key` | string | `deposit`, `reward_deposit`, `card_issuance_fee`, `card_shipping_fee`, `card_issuance_points`, `fee` or `merchant` |
+    | `title_fallback` | string | Present for `merchant`, `fee` and `card_issuance_points` rows: the merchant name or a label |
+    | `subtitle` | string | Present when the row has a card: `"** <last 4 digits>"` |
+    | `amount` | number | Signed from the user's point of view: deposits positive, refunds and reversals positive, purchases and fees negative. Includes the fees charged on the transaction |
+    | `currency` | string | For example `"USD"` |
+    | `occurredAt` | string | ISO 8601 timestamp |
+    | `merchant` | object \| null | For card payments: `{ name, city?, country?, mcc?, mccCategory?, state?, zipcode?, mid? }`; `null` otherwise |
+    | `cardId` | string \| null | |
+    | `feeBreakdown` | object | Present when a fee is attached: `{ base, fee }` (numbers; `amount` is their sum with the sign applied) |
+    | `rawType` | string | The card platform's transaction type, for example `Consumption`, `Refund`, `Reversal`, `TransferIn` |
+    | `countedInSpending` | boolean | Whether the row counts as a card purchase or a card fee in the user's spending figures |
+    | `category` / `categorySource` | string | Present on card purchases: the spending category |
 
     ## Partner Pool
 
@@ -1515,7 +1599,7 @@ paths:
                     example: OAuth access token generated successfully
                   accessToken:
                     type: string
-                    example: "eyJjbGllbn********tIiwiY2xpZW50X2FwaV9rZXkiOiJkNm9zS0tRWUczZVdUbkE4Q0djVWprWDlpaUN4bnlldUdibXBOVHR3MF9jIiwidGltZXN0YW1wIjoxNzYyNDQ3NzAwMjE3LCJ1dWlkIjoiODY3ZWY5YjctYjM1NC00OWUwLTgyNTktYzIyYjUxMTkwZDZjIn0=./V9EI/wBvkf3qZ2G*****dWQxBBKVsE4+E="
+                    example: "<access token>"
                   success:
                     type: boolean
                     example: true
@@ -2184,7 +2268,7 @@ paths:
                     properties:
                       accessToken:
                         type: string
-                        example: "_act-jwt-eyJhbGciOiJub25lIn0.eyJqdGkiOi=========U5YzAtNDhlYy1iOTM4LWRjZjUyYTk2ZjVjNC12MiIsI=====h0dHBzOi8vYXBpLnN1bXN1Yi5jb20ifQ.-v2"
+                        example: "<Sumsub access token>"
                       userId:
                         type: string
                         example: a8b70aa0-5b6f-481d-b9d2-2617b9e4f5b7
@@ -3301,29 +3385,73 @@ paths:
                       example: "Transactions fetched successfully"
                     transactions:
                       type: array
+                      description: Newest first.
                       items:
                         type: object
                         properties:
-                          transactionId:
+                          id:
                             type: string
-                            example: "txn_123456"
+                          kind:
+                            type: string
+                            enum: [deposit, spend, fee, reward, issuance]
+                          status:
+                            type: string
+                            enum: [completed, pending, declined]
+                          title_key:
+                            type: string
+                            description: "`deposit`, `reward_deposit`, `card_issuance_fee`, `card_shipping_fee`, `card_issuance_points`, `fee` or `merchant`."
+                          title_fallback:
+                            type: string
+                            description: Present for `merchant`, `fee` and `card_issuance_points` rows (the merchant name or a label).
+                          subtitle:
+                            type: string
+                            description: 'Present when the row has a card: "** <last 4 digits>".'
                           amount:
                             type: number
-                            format: float
-                            example: 120.75
+                            description: >
+                              Signed from the user's point of view: deposits positive, refunds and reversals positive,
+                              purchases and fees negative. Includes the fees charged on the transaction.
+                            example: -12.5
                           currency:
                             type: string
                             example: "USD"
-                          status:
-                            type: string
-                            example: "COMPLETED"
-                          merchantName:
-                            type: string
-                            example: "Amazon"
-                          transactionDate:
+                          occurredAt:
                             type: string
                             format: date-time
-                            example: "2025-07-20T14:32:11.000Z"
+                          merchant:
+                            type: object
+                            nullable: true
+                            description: For card payments; `null` otherwise.
+                            properties:
+                              name: { type: string }
+                              city: { type: string }
+                              country: { type: string }
+                              mcc: { type: string }
+                              mccCategory: { type: string }
+                              state: { type: string }
+                              zipcode: { type: string }
+                              mid: { type: string }
+                          cardId:
+                            type: string
+                            nullable: true
+                          feeBreakdown:
+                            type: object
+                            description: Present when a fee is attached. `amount` is `base` + `fee` with the sign applied.
+                            properties:
+                              base: { type: number }
+                              fee: { type: number }
+                          rawType:
+                            type: string
+                            description: The card platform's transaction type, for example `Consumption`, `Refund`, `Reversal`, `TransferIn`.
+                          countedInSpending:
+                            type: boolean
+                            description: Whether the row counts as a card purchase or a card fee in the user's spending figures.
+                          category:
+                            type: string
+                            description: Present on card purchases. The spending category.
+                          categorySource:
+                            type: string
+                            description: Present on card purchases. How the category was set.
                     code:
                       type: integer
                       example: 0

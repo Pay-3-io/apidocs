@@ -226,9 +226,30 @@ Locks or unlocks a card.
 
 ### POST /card/fetch_transactions
 
-Returns transaction history.
+Returns the user's card transaction history, newest first.
 
 - body: `{ userId, page, limit }`
+- 200: `{ message, transactions: [Transaction], code: 0 }`
+
+Transaction:
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | |
+| `kind` | `"deposit"` \| `"spend"` \| `"fee"` \| `"reward"` \| `"issuance"` | |
+| `status` | `"completed"` \| `"pending"` \| `"declined"` | |
+| `title_key` | string | `deposit`, `reward_deposit`, `card_issuance_fee`, `card_shipping_fee`, `card_issuance_points`, `fee` or `merchant` |
+| `title_fallback` | string | Present for `merchant`, `fee` and `card_issuance_points` rows: the merchant name or a label |
+| `subtitle` | string | Present when the row has a card: `"** <last 4 digits>"` |
+| `amount` | number | Signed from the user's point of view: deposits positive, refunds and reversals positive, purchases and fees negative. Includes the fees charged on the transaction |
+| `currency` | string | For example `"USD"` |
+| `occurredAt` | string | ISO 8601 timestamp |
+| `merchant` | object \| null | For card payments: `{ name, city?, country?, mcc?, mccCategory?, state?, zipcode?, mid? }`; `null` otherwise |
+| `cardId` | string \| null | |
+| `feeBreakdown` | object | Present when a fee is attached: `{ base, fee }` (numbers; `amount` is their sum with the sign applied) |
+| `rawType` | string | The card platform's transaction type, for example `Consumption`, `Refund`, `Reversal`, `TransferIn` |
+| `countedInSpending` | boolean | Whether the row counts as a card purchase or a card fee in the user's spending figures |
+| `category` / `categorySource` | string | Present on card purchases: the spending category |
 
 ## Partner Pool
 
