@@ -15,7 +15,8 @@ The base URL includes the trailing `/external-service`; the paths below sit dire
 
 | Scope | Covers |
 |---|---|
-| `users:status` | `GET /users/list`, `GET /users/deposits` and `GET /users/{userId}` (`users:read` satisfies it automatically) |
+| `users:status` | `GET /users/list` and `GET /users/{userId}` (`users:read` satisfies it automatically) |
+| `users:deposits` | `GET /users/deposits` (returns email and name, so the status-only scope is not enough; `users:read` and `users:write` satisfy it automatically; clients with no scopes configured do not) |
 | `users:invite` | `PUT /users/{userId}/invite` (`users:write` satisfies it automatically) |
 
 ## Visibility
@@ -162,7 +163,7 @@ curl -s "$BASE_URL/users/deposits?limit=50&offset=0" \
   Unlike `GET /users/list`, the page is returned as `items` with `total` / `limit` / `offset` at the top level (no `paging` object).
 - With no matching deposits the response is `{"items": [], "total": 0, "limit": 50, "offset": 0}`. An empty result is not a `404`.
 - 400: invalid `limit` / `offset` / `from` / `to` / `referralCode` / `userId`, `from` later than `to`, or an unaccepted parameter name. Body: `{ "message": ..., "code": 400 }`.
-- 403: missing scope (`users:status`; `users:read` satisfies it).
+- 403: `Insufficient scope: users:deposits required`. Clients holding `users:read` or `users:write` satisfy it automatically; `users:status` alone is not enough because this endpoint returns email and name, and clients with no scopes configured do not pass.
 
 | Field | Meaning |
 |---|---|
