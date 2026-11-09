@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Pay3 External API
-  version: "1.2.0"
+  version: "1.2.1"
   description: |
     B2B API for partners who use Pay3's card issuance, identity verification and payment infrastructure behind their own UI. Authentication is an OAuth access token obtained with your client ID and API key. API keys, the webhook endpoint and the source-IP allowlist are managed in the partner console's Developer menu.
 
@@ -581,7 +581,7 @@ info:
     - `GET /pool/transfer/{transferId}` / `GET /pool/transfers` (`status` / `userId` / `from` / `to` / `limit` / `offset`)
     - `GET /pool/ledger` (`type` / `from` / `to` / `limit` / `offset`)
 
-    The list endpoints (`/pool/transfers`, `/pool/ledger`, `/users/list`, `GET /referral-codes`, `GET /referral-codes/stats`) accept **a fixed set of parameter names and reject anything else with 400**, so a misspelling never comes back as an unfiltered `200` (see **Query parameter validation**).
+    The list endpoints (`/pool/transfers`, `/pool/ledger`, `/users/list`, `/users/deposits`, `GET /referral-codes`, `GET /referral-codes/stats`) accept **a fixed set of parameter names and reject anything else with 400**, so a misspelling never comes back as an unfiltered `200` (see **Query parameter validation**).
 
     `from` and `to` filter on `createdAt`. **A date-only value is interpreted in UTC and `to` covers the whole day**, so a single day is `?from=2026-09-15&to=2026-09-15` (see **Date boundaries**).
 
@@ -597,9 +597,10 @@ info:
 
     ## User Status
 
-    List your users and read their KYC and card issuance status. → ****Users****
+    List your users, their on-chain deposits, and their KYC and card issuance status. → ****Users****
 
     - `GET /users/list` (scope `users:status`; accepts only `limit` 1–200, `offset`, `referralCode` and `kycStatus`)
+    - `GET /users/deposits` (scope `users:status`; on-chain deposits by your users, newest first; accepts only `limit` 1–200, `offset`, `from`, `to`, `referralCode` and `userId`. Returns `{ items, total, limit, offset }`. Fees collected by Pay3 are not included — `amount` / `fee` are the on-chain values as recorded)
     - `GET /users/{userId}` (scope `users:status`; unattributed and non-existent ids both return 404)
     - `PUT /users/{userId}/invite` (scope `users:invite`, satisfied by `users:write`; enables or disables the user's invite link)
 
@@ -639,7 +640,7 @@ info:
 
     # Users
 
-    Read the KYC completion state and card issuance status of the users attributed to your client.
+    Read the KYC completion state, card issuance status and on-chain deposits of the users attributed to your client.
 
     All requests require `Authorization: Bearer <accessToken>`.
 
@@ -655,6 +656,7 @@ info:
     | Scope | Covers |
     |---|---|
     | `users:status` | `GET /users/list` and `GET /users/{userId}` (`users:read` satisfies it automatically) |
+    | `users:deposits` | `GET /users/deposits` (returns email and name, so the status-only scope is not enough; `users:read` and `users:write` satisfy it automatically; clients with no scopes configured do not) |
     | `users:invite` | `PUT /users/{userId}/invite` (`users:write` satisfies it automatically) |
 
     ## Visibility
@@ -665,7 +667,7 @@ info:
     2. They signed up through the invite link of a user in (1), at any depth. They inherit that user's referral code unchanged, and are part of the same set with no extra step.
     3. You created them with `POST /users/register`.
 
-    This set is **identical** across `GET /users/list`, `GET /users/{userId}` and `POST /pool/transfer` (**Partner Pool**): a user that appears in the list can always be looked up and can always be sent a top-up instruction (other conditions, such as KYC, still apply).
+    This set is **identical** across `GET /users/list`, `GET /users/deposits`, `GET /users/{userId}` and `POST /pool/transfer` (**Partner Pool**): a user that appears in the list can always be looked up and can always be sent a top-up instruction (other conditions, such as KYC, still apply).
 
     User ids that are not attributed to you, belong to another partner, or do not exist all return **`404`**. `403` is never used here, so the response does not disclose whether a user id exists.
 
@@ -764,6 +766,79 @@ info:
 
     - The termination condition is **`offset >= paging.total`**. Looping until `data` comes back empty also works, since an `offset` past the total returns a `200` empty page rather than a `404`.
     - If new users register while you are paging, the newest-first order shifts later pages by one row each. When an exact single pass matters, use incremental sync instead: read from the first page until you reach the last user you already have.
+
+    ## GET /users/deposits
+
+    Lists the on-chain deposits made by the users attributed to your client (the same set as **`GET /users/list`**), newest first.
+
+    ```bash
+    curl -s "$BASE_URL/users/deposits?limit=50&offset=0" \
+      -H "Authorization: Bearer $ACCESS_TOKEN"
+    ```
+
+    - 200:
+      ```json
+      {
+        "items": [
+          {
+            "id": "8a1f0c52-0000-4000-8000-000000000000",
+            "userId": "5c3ff529-0000-4000-8000-000000000000",
+            "email": "user@example.com",
+            "name": "TARO YAMADA",
+            "referralCode": "PARTNER-A",
+            "amount": "60.000000",
+            "fee": "0",
+            "currency": "USDT",
+            "chain": "TRON",
+            "transactionHash": "0x3b6f...",
+            "status": "Success",
+            "depositedAt": "2026-11-08T03:50:36.236Z"
+          }
+        ],
+        "total": 1,
+        "limit": 50,
+        "offset": 0
+      }
+      ```
+      Unlike `GET /users/list`, the page is returned as `items` with `total` / `limit` / `offset` at the top level (no `paging` object).
+    - With no matching deposits the response is `{"items": [], "total": 0, "limit": 50, "offset": 0}`. An empty result is not a `404`.
+    - 400: invalid `limit` / `offset` / `from` / `to` / `referralCode` / `userId`, `from` later than `to`, or an unaccepted parameter name. Body: `{ "message": ..., "code": 400 }`.
+    - 403: `Insufficient scope: users:deposits required`. Clients holding `users:read` or `users:write` satisfy it automatically; `users:status` alone is not enough because this endpoint returns email and name, and clients with no scopes configured do not pass.
+
+    | Field | Meaning |
+    |---|---|
+    | `id` | Pay3's id for the deposit record |
+    | `userId` | The user the deposit belongs to (same value as in `GET /users/list`) |
+    | `email` | The user's email address, or `null` |
+    | `name` | First name and last name joined with a space, or `null` when neither is set |
+    | `referralCode` | The user's referral code, same value as `referralCode` in `GET /users/list`. `null` for users created through `POST /users/register` without one |
+    | `amount` | Deposited amount as recorded on-chain, as a string (not rounded or reformatted) |
+    | `fee` | The fee recorded with the on-chain transaction, as a string (not rounded or reformatted), or `null` |
+    | `currency` | Token, e.g. `USDT`, `USDC` |
+    | `chain` | Network, e.g. `TRON`, `ETH` |
+    | `transactionHash` | On-chain transaction hash, or `null` when not recorded |
+    | `status` | Deposit status as recorded by the card platform (e.g. `Success` once credited). Deposits still in progress are included with their current status |
+    | `depositedAt` | When the deposit was recorded (ISO 8601, UTC). `null` if the record carries no readable time |
+
+    - **Fees collected by Pay3 are not included.** `amount` and `fee` are the on-chain values as recorded for the transaction; Pay3's deposit fee (the fee rate set on your referral codes) is not deducted from or added to them here.
+    - The sender address, the deposit address and internal account identifiers are not returned.
+    - A deposit is listed only when it can be tied to exactly one user. Deposits to an account that is shared by more than one user record are left out rather than attributed to a possibly wrong user.
+
+    ### Parameters
+
+    All parameters are optional and can be combined. An empty value (`?from=`) means no filter.
+
+    | Parameter | Matches | On an invalid value |
+    |---|---|---|
+    | `limit` | Page size, default `50`, decimal integer 1–200 | `400` — never silently clamped |
+    | `offset` | Rows to skip, default `0` | `400` for a negative or non-integer value. An `offset` past the total returns a `200` empty page |
+    | `from` / `to` | `depositedAt` within the range, **both ends inclusive**. ISO 8601 date (`2026-11-08`, UTC) or datetime (`2026-11-08T00:00:00Z`, `2026-11-08T09:00:00+09:00`). A date-only `to` covers the whole day, so a single day is `?from=2026-11-08&to=2026-11-08`. Deposits without a readable `depositedAt` are excluded whenever `from` or `to` is set | `400` for a malformed or non-existent date, or when `from` is later than `to` |
+    | `referralCode` | Deposits by users attributed to this code (same matching as `GET /users/list?referralCode=`: case-insensitive exact match) | `400` when not 3–64 characters of `A-Z`, `a-z`, `0-9`, `-`, `_`. A well-formed code that is not yours returns a `200` empty page |
+    | `userId` | Deposits by one user | `400` when not a uuid. A uuid that is not attributed to you returns a `200` empty page |
+
+    - Ordering is fixed: newest `depositedAt` first, ties broken by `id`; records without a `depositedAt` come last.
+    - `total` is the number of deposits matching the filters, before `limit` is applied. Read every page the same way as **`GET /users/list`**, advancing `offset` until it reaches `total`.
+    - `limit`, `offset`, `from`, `to`, `referralCode` and `userId` are **the only accepted parameters** (case-sensitive); any other name returns `400`.
 
     ## GET /users/{userId}
 
@@ -1119,7 +1194,7 @@ info:
 
     ## Query parameters
 
-    On the list endpoints (`GET /pool/transfers`, `GET /pool/ledger`, `GET /users/list`, `GET /referral-codes`, `GET /referral-codes/stats`) and on `GET /pool/balance`, values and parameter names are validated strictly: out-of-range values, malformed values, and unknown names all return `400` with a body of the form `{ "message": ..., "code": 400 }`, rather than being clamped, ignored, or answered with an empty `200`. A typo is therefore never indistinguishable from "no rows".
+    On the list endpoints (`GET /pool/transfers`, `GET /pool/ledger`, `GET /users/list`, `GET /users/deposits`, `GET /referral-codes`, `GET /referral-codes/stats`) and on `GET /pool/balance`, values and parameter names are validated strictly: out-of-range values, malformed values, and unknown names all return `400` with a body of the form `{ "message": ..., "code": 400 }`, rather than being clamped, ignored, or answered with an empty `200`. A typo is therefore never indistinguishable from "no rows".
 
     | Parameter | Accepted values | Default |
     |---|---|---|
@@ -1128,8 +1203,8 @@ info:
     | `from` / `to` | ISO 8601 date `2026-09-14`, or datetime with offset `2026-09-14T00:00:00Z` / `2026-09-14T09:00:00+09:00`. Non-existent dates (`2026-02-30`) return 400. Fractional seconds up to 6 digits, matching the stored precision; 7 or more return 400 | no filter |
     | `type` (`/pool/ledger`) | Exactly one of `deposit`, `fee`, `transfer`, `refund`, `withdrawal`, `adjustment` | no filter |
     | `status` (`/pool/transfers`) | Exactly one of `pending`, `settled`, `failed`, `rejected` | no filter |
-    | `userId` (`/pool/transfers`) | A uuid | no filter |
-    | `referralCode` (`/users/list`) | 3–64 characters of `A-Z`, `a-z`, `0-9`, `-`, `_` (case-insensitive). A well-formed code that is not yours returns an empty `200` page | no filter |
+    | `userId` (`/pool/transfers`, `/users/deposits`) | A uuid | no filter |
+    | `referralCode` (`/users/list`, `/users/deposits`) | 3–64 characters of `A-Z`, `a-z`, `0-9`, `-`, `_` (case-insensitive). A well-formed code that is not yours returns an empty `200` page | no filter |
     | `kycStatus` (`/users/list`) | Exactly one of `not_submitted`, `pending`, `approved`, `rejected` | no filter |
 
     An empty value (`?from=`) means "no filter".
@@ -1146,6 +1221,7 @@ info:
     | `GET /pool/ledger` | `type`, `from`, `to`, `limit`, `offset` |
     | `GET /pool/transfers` | `status`, `userId`, `from`, `to`, `limit`, `offset` |
     | `GET /users/list` | `limit`, `offset`, `referralCode`, `kycStatus` |
+    | `GET /users/deposits` | `limit`, `offset`, `from`, `to`, `referralCode`, `userId` (`from` / `to` apply to `depositedAt`, both inclusive) |
     | `GET /referral-codes` | (none; always returns all codes) |
     | `GET /referral-codes/stats` | `from`, `to` (same date boundaries as below) |
     | `GET /pool/balance` | (none; always returns the current balance) |
@@ -1989,6 +2065,152 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "403":
           description: Insufficient scope (`users:status` required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /users/deposits:
+    get:
+      tags:
+        - Users
+      operationId: listUserDeposits
+      summary: List on-chain deposits by your users
+      description: |
+        Lists the on-chain deposits made by the users attributed to your client
+        (the same set as `GET /users/list`), newest first.
+
+        Unlike `GET /users/list`, the page is returned as `items` with `total` /
+        `limit` / `offset` at the top level (no `paging` object).
+
+        - **Fees collected by Pay3 are not included.** `amount` and `fee` are the
+          on-chain values as recorded for the transaction; Pay3's deposit fee (the
+          fee rate set on your referral codes) is not deducted from or added to them here.
+        - The sender address, the deposit address and internal account identifiers
+          are not returned.
+        - **Shared accounts are omitted.** A deposit is listed only when it can be
+          tied to exactly one user. Deposits to an account that is shared by more
+          than one user record are left out rather than attributed to a possibly
+          wrong user.
+
+        Ordering is fixed: newest `depositedAt` first, ties broken by `id`; records
+        without a `depositedAt` come last. Read every page by advancing `offset`
+        until it reaches `total`.
+
+        **Unknown query parameters return `400`.** `limit`, `offset`, `from`, `to`,
+        `referralCode` and `userId` are the only accepted names and they are
+        case-sensitive. All parameters are optional and can be combined; an empty
+        value (`?from=`) means no filter.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+          description: |
+            Decimal integer between 1 and 200. Out-of-range or non-integer values
+            return `400` — they are never silently clamped.
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: |
+            Decimal integer, 0 or greater. Negative or non-integer values return `400`.
+            An `offset` past the total returns a `200` empty page.
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            example: "2026-11-08"
+          description: |
+            Inclusive lower bound on `depositedAt`. ISO 8601 date (`2026-11-08`, read
+            as 00:00:00 UTC) or datetime (`2026-11-08T00:00:00Z` /
+            `2026-11-08T09:00:00+09:00`). A malformed or non-existent date returns `400`.
+            Deposits without a readable `depositedAt` are excluded whenever `from` or
+            `to` is set.
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            example: "2026-11-08"
+          description: |
+            Inclusive upper bound on `depositedAt`. Same format and `400` rules as
+            `from`. **A date-only value covers the whole day (UTC)**, so a single day is
+            `?from=2026-11-08&to=2026-11-08`. `from` later than `to` returns `400`.
+        - name: referralCode
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{3,64}$"
+            example: PARTNER-A
+          description: |
+            Deposits by users attributed to this code (same matching as
+            `GET /users/list?referralCode=`: case-insensitive exact match). A value that
+            is not 3–64 characters of `A-Z a-z 0-9 - _` returns `400`; a well-formed code
+            that is not one of yours returns a `200` empty page.
+        - name: userId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+            example: 5c3ff529-0000-4000-8000-000000000000
+          description: |
+            Deposits by one user. A value that is not a uuid returns `400`; a uuid that
+            is not attributed to you returns a `200` empty page.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: |
+            Successful operation. An empty `items` array means no matching deposit —
+            it is not an error.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, limit, offset]
+                additionalProperties: false
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserDeposit"
+                  total:
+                    type: integer
+                    description: Number of deposits matching the filters, before `limit` is applied.
+                    example: 1
+                  limit:
+                    type: integer
+                    example: 50
+                  offset:
+                    type: integer
+                    example: 0
+        "400":
+          description: |
+            Invalid `limit`, `offset`, `from`, `to`, `referralCode` or `userId`, `from`
+            later than `to`, or an unknown query parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Insufficient scope (`users:deposits` required; `users:read` and `users:write` satisfy it automatically. Clients with no scopes configured are refused)
           content:
             application/json:
               schema:
@@ -4459,6 +4681,80 @@ components:
           type: integer
           nullable: true
           description: Total rows matching the filters, before `limit` is applied.
+    UserDeposit:
+      type: object
+      description: One on-chain deposit by one of your users (`GET /users/deposits`).
+      additionalProperties: false
+      required: [id, userId, email, name, referralCode, amount, fee, currency, chain, transactionHash, status, depositedAt]
+      properties:
+        id:
+          type: string
+          description: Pay3's id for the deposit record.
+          example: 8a1f0c52-0000-4000-8000-000000000000
+        userId:
+          type: string
+          format: uuid
+          description: The user the deposit belongs to (same value as in `GET /users/list`).
+          example: 5c3ff529-0000-4000-8000-000000000000
+        email:
+          type: string
+          nullable: true
+          description: The user's email address.
+          example: user@example.com
+        name:
+          type: string
+          nullable: true
+          description: First name and last name joined with a space; `null` when neither is set.
+          example: TARO YAMADA
+        referralCode:
+          type: string
+          nullable: true
+          description: |
+            The user's referral code, same value as `referralCode` in `GET /users/list`.
+            `null` for users created through `POST /users/register` without one.
+          example: PARTNER-A
+        amount:
+          type: string
+          nullable: true
+          description: |
+            Deposited amount as recorded on-chain, as a string (not rounded or reformatted).
+            Pay3's deposit fee is not deducted. `null` only if the record carries no amount.
+          example: "60.000000"
+        fee:
+          type: string
+          nullable: true
+          description: |
+            The fee recorded with the on-chain transaction, as a string (not rounded or
+            reformatted). This is not Pay3's deposit fee.
+          example: "0"
+        currency:
+          type: string
+          nullable: true
+          description: Token, e.g. `USDT`, `USDC`.
+          example: USDT
+        chain:
+          type: string
+          nullable: true
+          description: Network, e.g. `TRON`, `ETH`.
+          example: TRON
+        transactionHash:
+          type: string
+          nullable: true
+          description: On-chain transaction hash, or `null` when not recorded.
+          example: "0x3b6f..."
+        status:
+          type: string
+          nullable: true
+          description: |
+            Deposit status as recorded by the card platform (e.g. `Success` once credited).
+            Deposits still in progress are included with their current status.
+          example: Success
+        depositedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the deposit was recorded (ISO 8601, UTC). `null` if the record carries no readable time.
+          example: "2026-11-08T03:50:36.236Z"
     ErrorResponse:
       type: object
       properties:

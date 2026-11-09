@@ -12,7 +12,7 @@
 - [Authentication](api/authentication.md): OAuth access tokens, Bearer rules, tenant isolation
 - [Environments](api/environments.md): sandbox vs production, deposit rails, separate credentials
 - [Endpoints](api/endpoints.md): users, KYC, cards, insufficient-balance semantics, error format
-- [Users](api/users.md): listing and looking up your users, KYC stages, enabling a user's invite link (`PUT /users/{userId}/invite`)
+- [Users](api/users.md): listing and looking up your users, their on-chain deposits (`GET /users/deposits`), KYC stages, enabling a user's invite link (`PUT /users/{userId}/invite`)
 - [Partner Pool](api/pool.md): balance, deposit address, top-up transfers, ledger, source-IP allowlist
 - [Referral Codes](api/referral-codes.md): referral codes and sign-up links
 - [Idempotency](api/idempotency.md): Idempotency-Key semantics

@@ -228,7 +228,7 @@ $ curl -s "$BASE_URL/pool/ledger?type=charge" -H "Authorization: Bearer $TOKEN"
 
 ## Query parameters
 
-On the list endpoints (`GET /pool/transfers`, `GET /pool/ledger`, `GET /users/list`, `GET /referral-codes`, `GET /referral-codes/stats`) and on `GET /pool/balance`, values and parameter names are validated strictly: out-of-range values, malformed values, and unknown names all return `400` with a body of the form `{ "message": ..., "code": 400 }`, rather than being clamped, ignored, or answered with an empty `200`. A typo is therefore never indistinguishable from "no rows".
+On the list endpoints (`GET /pool/transfers`, `GET /pool/ledger`, `GET /users/list`, `GET /users/deposits`, `GET /referral-codes`, `GET /referral-codes/stats`) and on `GET /pool/balance`, values and parameter names are validated strictly: out-of-range values, malformed values, and unknown names all return `400` with a body of the form `{ "message": ..., "code": 400 }`, rather than being clamped, ignored, or answered with an empty `200`. A typo is therefore never indistinguishable from "no rows".
 
 | Parameter | Accepted values | Default |
 |---|---|---|
@@ -237,8 +237,8 @@ On the list endpoints (`GET /pool/transfers`, `GET /pool/ledger`, `GET /users/li
 | `from` / `to` | ISO 8601 date `2026-09-14`, or datetime with offset `2026-09-14T00:00:00Z` / `2026-09-14T09:00:00+09:00`. Non-existent dates (`2026-02-30`) return 400. Fractional seconds up to 6 digits, matching the stored precision; 7 or more return 400 | no filter |
 | `type` (`/pool/ledger`) | Exactly one of `deposit`, `fee`, `transfer`, `refund`, `withdrawal`, `adjustment` | no filter |
 | `status` (`/pool/transfers`) | Exactly one of `pending`, `settled`, `failed`, `rejected` | no filter |
-| `userId` (`/pool/transfers`) | A uuid | no filter |
-| `referralCode` (`/users/list`) | 3–64 characters of `A-Z`, `a-z`, `0-9`, `-`, `_` (case-insensitive). A well-formed code that is not yours returns an empty `200` page | no filter |
+| `userId` (`/pool/transfers`, `/users/deposits`) | A uuid | no filter |
+| `referralCode` (`/users/list`, `/users/deposits`) | 3–64 characters of `A-Z`, `a-z`, `0-9`, `-`, `_` (case-insensitive). A well-formed code that is not yours returns an empty `200` page | no filter |
 | `kycStatus` (`/users/list`) | Exactly one of `not_submitted`, `pending`, `approved`, `rejected` | no filter |
 
 An empty value (`?from=`) means "no filter".
@@ -255,6 +255,7 @@ $ curl -s "$BASE_URL/pool/ledger?userid=abc" -H "Authorization: Bearer $TOKEN"
 | `GET /pool/ledger` | `type`, `from`, `to`, `limit`, `offset` |
 | `GET /pool/transfers` | `status`, `userId`, `from`, `to`, `limit`, `offset` |
 | `GET /users/list` | `limit`, `offset`, `referralCode`, `kycStatus` |
+| `GET /users/deposits` | `limit`, `offset`, `from`, `to`, `referralCode`, `userId` (`from` / `to` apply to `depositedAt`, both inclusive) |
 | `GET /referral-codes` | (none; always returns all codes) |
 | `GET /referral-codes/stats` | `from`, `to` (same date boundaries as below) |
 | `GET /pool/balance` | (none; always returns the current balance) |

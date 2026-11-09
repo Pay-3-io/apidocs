@@ -260,7 +260,7 @@ Tops up user balances from a pool deposit: balance, transfer instructions and le
 - `GET /pool/transfer/{transferId}` / `GET /pool/transfers` (`status` / `userId` / `from` / `to` / `limit` / `offset`)
 - `GET /pool/ledger` (`type` / `from` / `to` / `limit` / `offset`)
 
-The list endpoints (`/pool/transfers`, `/pool/ledger`, `/users/list`, `GET /referral-codes`, `GET /referral-codes/stats`) accept **a fixed set of parameter names and reject anything else with 400**, so a misspelling never comes back as an unfiltered `200` (see [Query parameter validation](pool.md#query-parameter-validation)).
+The list endpoints (`/pool/transfers`, `/pool/ledger`, `/users/list`, `/users/deposits`, `GET /referral-codes`, `GET /referral-codes/stats`) accept **a fixed set of parameter names and reject anything else with 400**, so a misspelling never comes back as an unfiltered `200` (see [Query parameter validation](pool.md#query-parameter-validation)).
 
 `from` and `to` filter on `createdAt`. **A date-only value is interpreted in UTC and `to` covers the whole day**, so a single day is `?from=2026-09-15&to=2026-09-15` (see [Date boundaries](pool.md#date-boundaries)).
 
@@ -276,9 +276,10 @@ Register, enable, disable and delete referral codes, set their card prices and d
 
 ## User Status
 
-List your users and read their KYC and card issuance status. → **[Users](users.md)**
+List your users, their on-chain deposits, and their KYC and card issuance status. → **[Users](users.md)**
 
 - `GET /users/list` (scope `users:status`; accepts only `limit` 1–200, `offset`, `referralCode` and `kycStatus`)
+- `GET /users/deposits` (scope `users:status`; on-chain deposits by your users, newest first; accepts only `limit` 1–200, `offset`, `from`, `to`, `referralCode` and `userId`. Returns `{ items, total, limit, offset }`. Fees collected by Pay3 are not included — `amount` / `fee` are the on-chain values as recorded)
 - `GET /users/{userId}` (scope `users:status`; unattributed and non-existent ids both return 404)
 - `PUT /users/{userId}/invite` (scope `users:invite`, satisfied by `users:write`; enables or disables the user's invite link)
 

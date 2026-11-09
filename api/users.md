@@ -1,6 +1,6 @@
 # Users
 
-Read the KYC completion state and card issuance status of the users attributed to your client.
+Read the KYC completion state, card issuance status and on-chain deposits of the users attributed to your client.
 
 All requests require `Authorization: Bearer <accessToken>`.
 
@@ -16,6 +16,7 @@ The base URL includes the trailing `/external-service`; the paths below sit dire
 | Scope | Covers |
 |---|---|
 | `users:status` | `GET /users/list` and `GET /users/{userId}` (`users:read` satisfies it automatically) |
+| `users:deposits` | `GET /users/deposits` (returns email and name, so the status-only scope is not enough; `users:read` and `users:write` satisfy it automatically; clients with no scopes configured do not) |
 | `users:invite` | `PUT /users/{userId}/invite` (`users:write` satisfies it automatically) |
 
 ## Visibility
@@ -26,7 +27,7 @@ You see only the users attributed to your client. A user is attributed when eith
 2. They signed up through the invite link of a user in (1), at any depth. They inherit that user's referral code unchanged, and are part of the same set with no extra step.
 3. You created them with `POST /users/register`.
 
-This set is **identical** across `GET /users/list`, `GET /users/{userId}` and `POST /pool/transfer` ([Partner Pool](pool.md)): a user that appears in the list can always be looked up and can always be sent a top-up instruction (other conditions, such as KYC, still apply).
+This set is **identical** across `GET /users/list`, `GET /users/deposits`, `GET /users/{userId}` and `POST /pool/transfer` ([Partner Pool](pool.md)): a user that appears in the list can always be looked up and can always be sent a top-up instruction (other conditions, such as KYC, still apply).
 
 User ids that are not attributed to you, belong to another partner, or do not exist all return **`404`**. `403` is never used here, so the response does not disclose whether a user id exists.
 
@@ -125,6 +126,79 @@ done
 
 - The termination condition is **`offset >= paging.total`**. Looping until `data` comes back empty also works, since an `offset` past the total returns a `200` empty page rather than a `404`.
 - If new users register while you are paging, the newest-first order shifts later pages by one row each. When an exact single pass matters, use incremental sync instead: read from the first page until you reach the last user you already have.
+
+## GET /users/deposits
+
+Lists the on-chain deposits made by the users attributed to your client (the same set as [`GET /users/list`](#get-userslist)), newest first.
+
+```bash
+curl -s "$BASE_URL/users/deposits?limit=50&offset=0" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+- 200:
+  ```json
+  {
+    "items": [
+      {
+        "id": "8a1f0c52-0000-4000-8000-000000000000",
+        "userId": "5c3ff529-0000-4000-8000-000000000000",
+        "email": "user@example.com",
+        "name": "TARO YAMADA",
+        "referralCode": "PARTNER-A",
+        "amount": "60.000000",
+        "fee": "0",
+        "currency": "USDT",
+        "chain": "TRON",
+        "transactionHash": "0x3b6f...",
+        "status": "Success",
+        "depositedAt": "2026-11-08T03:50:36.236Z"
+      }
+    ],
+    "total": 1,
+    "limit": 50,
+    "offset": 0
+  }
+  ```
+  Unlike `GET /users/list`, the page is returned as `items` with `total` / `limit` / `offset` at the top level (no `paging` object).
+- With no matching deposits the response is `{"items": [], "total": 0, "limit": 50, "offset": 0}`. An empty result is not a `404`.
+- 400: invalid `limit` / `offset` / `from` / `to` / `referralCode` / `userId`, `from` later than `to`, or an unaccepted parameter name. Body: `{ "message": ..., "code": 400 }`.
+- 403: `Insufficient scope: users:deposits required`. Clients holding `users:read` or `users:write` satisfy it automatically; `users:status` alone is not enough because this endpoint returns email and name, and clients with no scopes configured do not pass.
+
+| Field | Meaning |
+|---|---|
+| `id` | Pay3's id for the deposit record |
+| `userId` | The user the deposit belongs to (same value as in `GET /users/list`) |
+| `email` | The user's email address, or `null` |
+| `name` | First name and last name joined with a space, or `null` when neither is set |
+| `referralCode` | The user's referral code, same value as `referralCode` in `GET /users/list`. `null` for users created through `POST /users/register` without one |
+| `amount` | Deposited amount as recorded on-chain, as a string (not rounded or reformatted) |
+| `fee` | The fee recorded with the on-chain transaction, as a string (not rounded or reformatted), or `null` |
+| `currency` | Token, e.g. `USDT`, `USDC` |
+| `chain` | Network, e.g. `TRON`, `ETH` |
+| `transactionHash` | On-chain transaction hash, or `null` when not recorded |
+| `status` | Deposit status as recorded by the card platform (e.g. `Success` once credited). Deposits still in progress are included with their current status |
+| `depositedAt` | When the deposit was recorded (ISO 8601, UTC). `null` if the record carries no readable time |
+
+- **Fees collected by Pay3 are not included.** `amount` and `fee` are the on-chain values as recorded for the transaction; Pay3's deposit fee (the fee rate set on your referral codes) is not deducted from or added to them here.
+- The sender address, the deposit address and internal account identifiers are not returned.
+- A deposit is listed only when it can be tied to exactly one user. Deposits to an account that is shared by more than one user record are left out rather than attributed to a possibly wrong user.
+
+### Parameters
+
+All parameters are optional and can be combined. An empty value (`?from=`) means no filter.
+
+| Parameter | Matches | On an invalid value |
+|---|---|---|
+| `limit` | Page size, default `50`, decimal integer 1–200 | `400` — never silently clamped |
+| `offset` | Rows to skip, default `0` | `400` for a negative or non-integer value. An `offset` past the total returns a `200` empty page |
+| `from` / `to` | `depositedAt` within the range, **both ends inclusive**. ISO 8601 date (`2026-11-08`, UTC) or datetime (`2026-11-08T00:00:00Z`, `2026-11-08T09:00:00+09:00`). A date-only `to` covers the whole day, so a single day is `?from=2026-11-08&to=2026-11-08`. Deposits without a readable `depositedAt` are excluded whenever `from` or `to` is set | `400` for a malformed or non-existent date, or when `from` is later than `to` |
+| `referralCode` | Deposits by users attributed to this code (same matching as `GET /users/list?referralCode=`: case-insensitive exact match) | `400` when not 3–64 characters of `A-Z`, `a-z`, `0-9`, `-`, `_`. A well-formed code that is not yours returns a `200` empty page |
+| `userId` | Deposits by one user | `400` when not a uuid. A uuid that is not attributed to you returns a `200` empty page |
+
+- Ordering is fixed: newest `depositedAt` first, ties broken by `id`; records without a `depositedAt` come last.
+- `total` is the number of deposits matching the filters, before `limit` is applied. Read every page the same way as [`GET /users/list`](#reading-every-page), advancing `offset` until it reaches `total`.
+- `limit`, `offset`, `from`, `to`, `referralCode` and `userId` are **the only accepted parameters** (case-sensitive); any other name returns `400`.
 
 ## GET /users/{userId}
 
