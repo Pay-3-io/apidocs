@@ -22,9 +22,9 @@ Both base URLs include the trailing `/external-service`. All API paths sit direc
 | Environment | Asset | Network |
 |---|---|---|
 | sandbox | USDC | Ethereum Sepolia (testnet) |
-| production | USDT | TRON |
+| production | USDT | TRON. Some accounts also have BSC (BEP20) |
 
-The deposit address, asset, and network are shown by `GET /pool/deposit_address` and in the console's **Pool** screen ([Pool](pool.md)). Sending any other asset or network to that address will not credit your pool. Each deposit must be at least 50.
+The deposit addresses, asset, and network are shown by `GET /pool/deposit_address` and in the console's **Pool** screen ([Pool](pool.md)). Sending any other asset or network to an address will not credit your pool. Each deposit must be at least 50.
 
 ## Sandbox limitations
 

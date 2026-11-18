@@ -297,9 +297,9 @@ info:
     | Environment | Asset | Network |
     |---|---|---|
     | sandbox | USDC | Ethereum Sepolia (testnet) |
-    | production | USDT | TRON |
+    | production | USDT | TRON. Some accounts also have BSC (BEP20) |
 
-    The deposit address, asset, and network are shown by `GET /pool/deposit_address` and in the console's **Pool** screen (**Pool**). Sending any other asset or network to that address will not credit your pool. Each deposit must be at least 50.
+    The deposit addresses, asset, and network are shown by `GET /pool/deposit_address` and in the console's **Pool** screen (**Pool**). Sending any other asset or network to an address will not credit your pool. Each deposit must be at least 50.
 
     ## Sandbox limitations
 
@@ -1052,23 +1052,31 @@ info:
 
     ## GET /pool/deposit_address
 
-    The pool deposit address. `currency` says what to send, `network` says which chain; both are per-account settings.
+    The pool deposit addresses. `currency` says what to send, `network` says which chain; both are per-account settings.
 
     ```json
-    { "address": "T...", "network": "TRON", "currency": "USDT", "feeRate": "0.0050" }
+    {
+      "address": "T...", "network": "TRON", "currency": "USDT", "feeRate": "0.0050",
+      "addresses": [
+        { "address": "T...",  "network": "TRON", "currency": "USDT" },
+        { "address": "0x...", "network": "BSC",  "currency": "USDT" }
+      ]
+    }
     ```
 
     | Environment | Deposit rail |
     |---|---|
     | Sandbox | USDC on Ethereum Sepolia (`network: "ETH_SEPOLIA"`, named explicitly so it is not confused with mainnet `ETH`) |
-    | Production | USDT on TRON |
+    | Production | USDT on TRON. Some accounts also have USDT on BSC (BEP20) |
 
-    - Use the returned `currency` and `network` pair as given. Any other asset sent to the address does not arrive; it can be neither detected nor refunded.
+    - `addresses` lists every deposit address of the pool. The first entry is the primary address, the same as the top-level `address`, `network`, and `currency`; any further entries are additional networks set up by Pay3. An account with no additional network has exactly one entry. `feeRate` and the minimum deposit apply to every entry.
+    - Use each returned `currency` and `network` pair as given. Any other asset or network sent to an address does not arrive; it can be neither detected nor refunded.
+    - The `chain` in the `pool.deposit.credited` webhook and the prefix of the ledger `referenceId` use the card platform's chain codes (`TRX` for TRON, `BNB` for BSC), not the `network` names shown here.
     - **Each deposit must be at least 50** (USDC or USDT). A deposit below 50 is not credited to the pool and is not refunded automatically; contact Pay3 if this happens.
     - Sandbox exercises the whole path — address, credit, ledger row, webhook — but it is a different rail from production. Testnet USDC is available from public faucets.
     - If `network` is `SANDBOX` and `address` starts with `0xSANDBOX_`, no real address has been issued yet. Do not send funds to it.
     - `409` — no deposit address has been issued. Do not send funds.
-    - `400` — any query parameter. This endpoint takes none and always returns the single registered address, so `?network=TRON` is rejected rather than dropped.
+    - `400` — any query parameter. This endpoint takes none and always returns every registered address, so `?network=TRON` is rejected rather than dropped.
 
     ## POST /pool/transfer
 
@@ -1243,7 +1251,7 @@ info:
     | `GET /referral-codes` | (none; always returns all codes) |
     | `GET /referral-codes/stats` | `from`, `to` (same date boundaries as below) |
     | `GET /pool/balance` | (none; always returns the current balance) |
-    | `GET /pool/deposit_address` | (none; always returns the registered address) |
+    | `GET /pool/deposit_address` | (none; always returns every registered address) |
 
     ### Date boundaries
 
@@ -1595,6 +1603,7 @@ info:
     | `card.issued` | A virtual card is issued | `userId, cardId, cardType, issuedAt` |
     | `card.activated` | A physical card is activated | `userId, cardId, cardType, activatedAt` |
     | `pool.deposit.credited` | A pool credit is applied | `referenceId, grossAmount, feeAmount, netAmount, available, currency, transactionHash, chain, sourceAddress, creditedAt` |
+    | `pool.deposit.held` | A deposit to your pool arrived but was not credited | `transactionHash, chain, reason` |
     | `pool.transfer.completed` | A charge is applied | `transferId, userId, amount, settledAt` |
     | `pool.transfer.failed` | A charge fails and the amount is returned | `transferId, userId, amount, reason, compensatedAt` |
 
@@ -1621,6 +1630,21 @@ info:
     **`card.activated`** applies to physical cards only, so `cardType` is always `physical`. It fires on successful activation and not on re-activation. Virtual cards are usable as soon as they are issued and emit `card.issued` only.
 
     **`pool.deposit.credited`** is not tied to a user, so there is no `data.userId`. `referenceId` is `<chain>:<transactionHash>`, the same value as `referenceId` on the `deposit` row in `GET /pool/ledger` (**Partner Pool**). `available` is the pool balance immediately after the credit.
+
+    **`pool.deposit.held`** is sent when a deposit to your pool deposit address arrives but is not credited. The funds are not lost: the deposit is recorded on Pay3's side and followed up by Pay3. Like `pool.deposit.credited`, it has no `data.userId`. `reason` is one of:
+
+    | `reason` | Meaning |
+    |---|---|
+    | `deposit_under_review` | The deposit is under the provider's compliance review. If the review clears it, it is credited and `pool.deposit.credited` follows for the same `transactionHash`. If it does not, no further event is sent and Pay3 contacts you about the return of the funds. Sent once per deposit |
+    | `deposit_below_minimum` | The amount is below the minimum deposit of 50.00 |
+    | `deposit_unsupported_currency` | The currency is not the one returned by `GET /pool/deposit_address` |
+    | `deposit_pool_not_provisioned` | The pool is not open yet |
+    | `deposit_sweep_failed` | The deposit could not be moved into the pool balance |
+    | `deposit_credit_failed` | The deposit could not be recorded on the pool ledger |
+
+    ```json
+    { "transactionHash": "<txHash>", "chain": "TRX", "reason": "deposit_under_review" }
+    ```
 
     ## Test delivery and redelivery
 
@@ -3074,6 +3098,16 @@ paths:
             retry with a new `Idempotency-Key`. Do not hard-code the required amount: branch on
             `status` / `code` (the price and the card platform's internal fees are Pay3-side
             configuration and differ between sandbox and production).
+
+            Physical cards: when the saved shipping address uses characters the card platform does not
+            accept, the request is refused **before any funds move** with `code: "shipping_address_mismatch"`,
+            `reason: "address_invalid"` and `fields` (which field failed and why; the submitted value is
+            never echoed). Rules: `addressLine1`, `addressLine2`, `state` — English letters, numbers, spaces
+            and `- , . / # ' : ( )`; `city` — English letters, spaces and `- , . '`, at most 25 characters;
+            `postalCode` — English letters, numbers, spaces and `-`; `country` — a 2- or 3-letter code.
+            `fields[].code` is `invalid_type` | `invalid_characters` | `too_long`. Full-width letters / digits /
+            spaces are converted to half-width (Unicode NFKC) when the address is saved. Correct the address
+            and retry.
           content:
             application/json:
               schema:
@@ -3832,8 +3866,15 @@ paths:
         (`feeRate`, fixed 4-decimal string).
 
         **Sandbox**: the deposit rail is USDC on Ethereum Sepolia (`network: "ETH_SEPOLIA"`,
-        `currency: "USDC"`). Production is USDT on TRON. Always use the returned `currency`
-        and `network` pair; any other asset sent to the address is not detected and cannot be refunded.
+        `currency: "USDC"`). Production is USDT on TRON; some accounts also have USDT on BSC (BEP20).
+        Always use each returned `currency` and `network` pair; any other asset or network sent to an
+        address is not detected and cannot be refunded.
+
+        `addresses` lists every deposit address of the pool. The first entry is the primary address
+        (the same as the top-level `address`, `network`, `currency`); further entries are additional
+        networks set up by Pay3. `feeRate` and the minimum deposit apply to every entry. The `chain`
+        in deposit webhooks and the ledger `referenceId` prefix use the card platform's chain codes
+        (`TRX`, `BNB`), not these `network` names (`TRON`, `BSC`).
         If `network` is `SANDBOX` and `address` starts with `0xSANDBOX_`, no real address has been
         issued yet — do not send funds.
         A real address is issued for production only, after Pay3 confirms the
@@ -3844,7 +3885,7 @@ paths:
         **This endpoint takes no query parameters.** Any parameter returns `400`
         (`Unknown query parameter "...". Accepted: (none)`) instead of being ignored —
         a dropped `?network=TRON` would otherwise read as "the TRON address", while the
-        response is always the single address registered for the pool.
+        response always carries every address registered for the pool.
       security:
         - bearerAuth: []
       responses:
@@ -3854,12 +3895,25 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [address, network, currency, feeRate]
+                required: [address, network, currency, feeRate, addresses]
                 properties:
                   address: { type: string, example: "0x721bfb8eebb953684da8b1bd1e09b38db720cb1d" }
                   network: { type: string, example: "ETH_SEPOLIA" }
                   currency: { type: string, example: "USDC" }
                   feeRate: { type: string, example: "0.0050" }
+                  addresses:
+                    type: array
+                    minItems: 1
+                    description: |
+                      Every deposit address of the pool. The first entry is the primary address
+                      (same values as the top-level `address`, `network`, `currency`).
+                    items:
+                      type: object
+                      required: [address, network, currency]
+                      properties:
+                        address: { type: string, example: "0x721bfb8eebb953684da8b1bd1e09b38db720cb1d" }
+                        network: { type: string, example: "ETH_SEPOLIA" }
+                        currency: { type: string, example: "USDC" }
         "400":
           description: A query parameter was supplied (this endpoint accepts none)
           content:
