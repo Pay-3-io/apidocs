@@ -26,6 +26,24 @@ Both base URLs include the trailing `/external-service`. All API paths sit direc
 
 The deposit address, asset, and network are shown by `GET /pool/deposit_address` and in the console's **Pool** screen ([Pool](pool.md)). Sending any other asset or network to that address will not credit your pool. Each deposit must be at least 50.
 
+## Sandbox limitations
+
+The sandbox runs against the card provider's test environment, which behaves differently from production in a few places.
+
+**Physical card shipping addresses.** The provider's sandbox has an incomplete postal-code dataset. A correct address in a country it does not cover — Vietnam, for example — is rejected at shipment registration with `Postal code and city do not match`. Production uses the full dataset, so the same address is accepted there.
+
+- When testing physical cards in sandbox, use a shipping address in the **United States, the United Kingdom, or China**. For China, address line 1 must contain Chinese characters.
+- Shipping fees depend on the destination country, so the amount charged in sandbox can differ from what the same user would pay for their real address.
+
+**When shipment registration fails.** The card is created but not shipped. Until the shipment is registered:
+
+- the card cannot be activated (setting the PIN returns an error), and
+- new deposits by that user are held and do not appear in the card balance.
+
+Contact Pay3 with the user's email or ID. We register the shipment again; the card does not need to be deleted or reissued.
+
+**User deposits.** Sandbox accepts USDC on Ethereum Sepolia only. A deposit can take longer to be credited than in production.
+
 ## Suggested verification order
 
 1. `oauth/access-token` — confirm authentication works.
