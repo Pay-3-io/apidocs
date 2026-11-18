@@ -78,6 +78,7 @@ Process deliveries idempotently, de-duplicating on the body's `id` (equal to `X-
 | `card.issued` | A virtual card is issued | `userId, cardId, cardType, issuedAt` |
 | `card.activated` | A physical card is activated | `userId, cardId, cardType, activatedAt` |
 | `pool.deposit.credited` | A pool credit is applied | `referenceId, grossAmount, feeAmount, netAmount, available, currency, transactionHash, chain, sourceAddress, creditedAt` |
+| `pool.deposit.held` | A deposit to your pool arrived but was not credited | `transactionHash, chain, reason` |
 | `pool.transfer.completed` | A charge is applied | `transferId, userId, amount, settledAt` |
 | `pool.transfer.failed` | A charge fails and the amount is returned | `transferId, userId, amount, reason, compensatedAt` |
 
@@ -104,6 +105,21 @@ A user who signs up with the invite code of one of your users (the code in that 
 **`card.activated`** applies to physical cards only, so `cardType` is always `physical`. It fires on successful activation and not on re-activation. Virtual cards are usable as soon as they are issued and emit `card.issued` only.
 
 **`pool.deposit.credited`** is not tied to a user, so there is no `data.userId`. `referenceId` is `<chain>:<transactionHash>`, the same value as `referenceId` on the `deposit` row in `GET /pool/ledger` ([Partner Pool](pool.md)). `available` is the pool balance immediately after the credit.
+
+**`pool.deposit.held`** is sent when a deposit to your pool deposit address arrives but is not credited. The funds are not lost: the deposit is recorded on Pay3's side and followed up by Pay3. Like `pool.deposit.credited`, it has no `data.userId`. `reason` is one of:
+
+| `reason` | Meaning |
+|---|---|
+| `deposit_under_review` | The deposit is under the provider's compliance review. If the review clears it, it is credited and `pool.deposit.credited` follows for the same `transactionHash`. If it does not, no further event is sent and Pay3 contacts you about the return of the funds. Sent once per deposit |
+| `deposit_below_minimum` | The amount is below the minimum deposit of 50.00 |
+| `deposit_unsupported_currency` | The currency is not the one returned by `GET /pool/deposit_address` |
+| `deposit_pool_not_provisioned` | The pool is not open yet |
+| `deposit_sweep_failed` | The deposit could not be moved into the pool balance |
+| `deposit_credit_failed` | The deposit could not be recorded on the pool ledger |
+
+```json
+{ "transactionHash": "<txHash>", "chain": "TRX", "reason": "deposit_under_review" }
+```
 
 ## Test delivery and redelivery
 

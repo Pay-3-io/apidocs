@@ -68,23 +68,31 @@ Current pool balance, for refill decisions.
 
 ## GET /pool/deposit_address
 
-The pool deposit address. `currency` says what to send, `network` says which chain; both are per-account settings.
+The pool deposit addresses. `currency` says what to send, `network` says which chain; both are per-account settings.
 
 ```json
-{ "address": "T...", "network": "TRON", "currency": "USDT", "feeRate": "0.0050" }
+{
+  "address": "T...", "network": "TRON", "currency": "USDT", "feeRate": "0.0050",
+  "addresses": [
+    { "address": "T...",  "network": "TRON", "currency": "USDT" },
+    { "address": "0x...", "network": "BSC",  "currency": "USDT" }
+  ]
+}
 ```
 
 | Environment | Deposit rail |
 |---|---|
 | Sandbox | USDC on Ethereum Sepolia (`network: "ETH_SEPOLIA"`, named explicitly so it is not confused with mainnet `ETH`) |
-| Production | USDT on TRON |
+| Production | USDT on TRON. Some accounts also have USDT on BSC (BEP20) |
 
-- Use the returned `currency` and `network` pair as given. Any other asset sent to the address does not arrive; it can be neither detected nor refunded.
+- `addresses` lists every deposit address of the pool. The first entry is the primary address, the same as the top-level `address`, `network`, and `currency`; any further entries are additional networks set up by Pay3. An account with no additional network has exactly one entry. `feeRate` and the minimum deposit apply to every entry.
+- Use each returned `currency` and `network` pair as given. Any other asset or network sent to an address does not arrive; it can be neither detected nor refunded.
+- The `chain` in the `pool.deposit.credited` webhook and the prefix of the ledger `referenceId` use the card platform's chain codes (`TRX` for TRON, `BNB` for BSC), not the `network` names shown here.
 - **Each deposit must be at least 50** (USDC or USDT). A deposit below 50 is not credited to the pool and is not refunded automatically; contact Pay3 if this happens.
 - Sandbox exercises the whole path — address, credit, ledger row, webhook — but it is a different rail from production. Testnet USDC is available from public faucets.
 - If `network` is `SANDBOX` and `address` starts with `0xSANDBOX_`, no real address has been issued yet. Do not send funds to it.
 - `409` — no deposit address has been issued. Do not send funds.
-- `400` — any query parameter. This endpoint takes none and always returns the single registered address, so `?network=TRON` is rejected rather than dropped.
+- `400` — any query parameter. This endpoint takes none and always returns every registered address, so `?network=TRON` is rejected rather than dropped.
 
 ## POST /pool/transfer
 
@@ -259,7 +267,7 @@ $ curl -s "$BASE_URL/pool/ledger?userid=abc" -H "Authorization: Bearer $TOKEN"
 | `GET /referral-codes` | (none; always returns all codes) |
 | `GET /referral-codes/stats` | `from`, `to` (same date boundaries as below) |
 | `GET /pool/balance` | (none; always returns the current balance) |
-| `GET /pool/deposit_address` | (none; always returns the registered address) |
+| `GET /pool/deposit_address` | (none; always returns every registered address) |
 
 ### Date boundaries
 
